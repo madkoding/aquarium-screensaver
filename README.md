@@ -109,7 +109,8 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 - **Shadow rays:** occluders live in a float texture. Projecting every point along the light direction onto a plane makes all points of one sun ray land in the same grid cell, so each shadow ray only tests the few ellipsoids of its own cell.
 - **Caustics:** a dense grid on the water surface refracts one sun ray per vertex down to the sea floor. The vertex shader computes the Jacobian of that surface-to-floor mapping; its inverse is the energy per area, accumulated additively into a texture that the floor, seaweed, fish and light shafts all sample.
 - **Distance for free:** the scene's alpha channel stores the distance to the camera, which is all the volumetric pass needs, so there is no extra depth pass.
-- The simulation costs about 2 ms per frame for 60 fish; everything else runs on the GPU. On an RTX 3060 across three monitors it renders about 280 FPS without ray tracing and about 120 FPS with it (medium quality), against a 75 Hz cap.
+- **Sharpness:** the caustic map is 2560x1200 (about 2.5 cm per texel) fed by a 0.09 mesh, lookups use a slight mip blur so thin focus lines stay smooth up close, and the water-surface mirror is traced at 2/3 resolution with distance-filtered waves so it doesn't alias.
+- The simulation costs about 2 ms per frame for 60 fish; everything else runs on the GPU. On an RTX 3060 across three monitors it renders about 280 FPS without ray tracing and about 85 FPS with it (medium quality), against a 75 Hz cap.
 
 ## Requirements
 

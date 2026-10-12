@@ -29,9 +29,9 @@ from sim import INST_FLOATS, Sim
 MAX_JELLY = 8
 BUBBLE_SOURCES = 14
 RT_QUALITY = {   # volume downscale, ray-march steps, mirror downscale
-    "low": dict(vol_div=3, steps=14, mirror_div=6),
-    "medium": dict(vol_div=2, steps=22, mirror_div=4),
-    "high": dict(vol_div=2, steps=32, mirror_div=3),
+    "low": dict(vol_div=3, steps=14, mirror_div=3.0),
+    "medium": dict(vol_div=2, steps=24, mirror_div=1.5),
+    "high": dict(vol_div=2, steps=32, mirror_div=1.5),
 }
 U_GRID, U_OCC, U_CAUS, U_MIRROR, U_SCENE, U_REFR = 3, 4, 5, 6, 7, 8   # texture units
 
@@ -181,7 +181,7 @@ class AquariumRenderer:
         self.caus_tex.repeat_x = self.caus_tex.repeat_y = False
         self.caus_fbo = c.framebuffer(color_attachments=[self.caus_tex])
         md, vd = self.rtq["mirror_div"], self.rtq["vol_div"]
-        self.mir_tex, self.mir_fbo = tex(sw // md, sh // md)
+        self.mir_tex, self.mir_fbo = tex(int(sw / md), int(sh / md))
         self.vol_tex, self.vol_fbo = tex(sw // vd, sh // vd)
 
     # -------------------------------------------------------------- per frame

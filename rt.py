@@ -16,11 +16,11 @@ K = 12                      # occluders remembered per cell
 MAX_OCC = 400
 
 # Caustic map: where refracted sunlight lands on the sea floor plane
-MAP_ORIGIN = (-36.0, -28.0)
-MAP_SIZE = (72.0, 38.0)
-MAP_RES = (1152, 608)
+MAP_ORIGIN = (-32.0, -22.0)
+MAP_SIZE = (64.0, 30.0)
+MAP_RES = (2560, 1200)         # ~2.5 cm per texel: caustic lines are thin
 # Grid of water-surface points the sun rays pass through
-SURF_X, SURF_Z, SURF_STEP = (-40.0, 40.0), (-32.0, 12.0), 0.16
+SURF_X, SURF_Z, SURF_STEP = (-36.0, 36.0), (-26.0, 12.0), 0.09   # dense: one ray per vertex
 WATER_ETA = 1.0 / 1.333
 
 

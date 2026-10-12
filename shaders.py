@@ -13,22 +13,27 @@ float floor_h(vec2 p) {
          + 0.06 * sin(p.y * 0.9 + p.x * 0.2);
 }
 
-float surf_h(vec2 p, float t) {
+// detail 1 = all wave trains, 0 = only the long swell (used far from the camera)
+float surf_h_lod(vec2 p, float t, float detail) {
     float h = 0.060 * sin(dot(p, vec2( 0.9,  0.4)) * 1.7 - t * 1.1)
             + 0.045 * sin(dot(p, vec2(-0.5,  0.8)) * 2.3 - t * 1.5 + 1.3)
-            + 0.030 * sin(dot(p, vec2( 0.2, -1.0)) * 3.1 - t * 1.9 + 2.1)
-            + 0.018 * sin(dot(p, vec2( 1.0,  0.1)) * 5.3 - t * 2.6 + 0.7)
-            + 0.026 * sin(dot(p, vec2(-0.7, -0.6)) * 2.9 - t * 1.7 + 0.4)
-            + 0.014 * sin(dot(p, vec2( 0.3,  0.95)) * 4.1 - t * 2.2 + 2.6);
+            + detail * (0.030 * sin(dot(p, vec2( 0.2, -1.0)) * 3.1 - t * 1.9 + 2.1)
+                      + 0.026 * sin(dot(p, vec2(-0.7, -0.6)) * 2.9 - t * 1.7 + 0.4))
+            + detail * detail * (0.018 * sin(dot(p, vec2( 1.0,  0.1)) * 5.3 - t * 2.6 + 0.7)
+                               + 0.014 * sin(dot(p, vec2( 0.3,  0.95)) * 4.1 - t * 2.2 + 2.6));
     return u_surf + h;
 }
 
-vec3 surf_normal(vec2 p, float t) {
+float surf_h(vec2 p, float t) { return surf_h_lod(p, t, 1.0); }
+
+vec3 surf_normal_lod(vec2 p, float t, float detail) {
     const float e = 0.02;
-    float dx = surf_h(p + vec2(e, 0.0), t) - surf_h(p - vec2(e, 0.0), t);
-    float dz = surf_h(p + vec2(0.0, e), t) - surf_h(p - vec2(0.0, e), t);
+    float dx = surf_h_lod(p + vec2(e, 0.0), t, detail) - surf_h_lod(p - vec2(e, 0.0), t, detail);
+    float dz = surf_h_lod(p + vec2(0.0, e), t, detail) - surf_h_lod(p - vec2(0.0, e), t, detail);
     return normalize(vec3(-dx, 2.0 * e, -dz));
 }
+
+vec3 surf_normal(vec2 p, float t) { return surf_normal_lod(p, t, 1.0); }
 """
 
 # Shared by the fragment shaders: water colour, fog, caustics, hashing.
@@ -209,7 +214,12 @@ out vec4 o_col;
 void main() {
     vec3 c = bg_color(uv);
     c += u_sunCol * 0.06 * pow(clamp(uv.y, 0.0, 1.0), 4.0);   // haze near the surface
-    if (u_rt > 0.5) c = texture(u_mirror, uv).rgb;            // ray-traced water + mirror
+    if (u_rt > 0.5) {                                         // ray-traced water + mirror
+        vec2 px = 1.0 / vec2(textureSize(u_mirror, 0));         // soften hit edges a little
+        c = (2.0 * texture(u_mirror, uv).rgb
+           + texture(u_mirror, uv + vec2(px.x, 0.0)).rgb + texture(u_mirror, uv - vec2(px.x, 0.0)).rgb
+           + texture(u_mirror, uv + vec2(0.0, px.y)).rgb + texture(u_mirror, uv - vec2(0.0, px.y)).rgb) / 6.0;
+    }
     o_col = vec4(c, 0.0);                                     // alpha = distance (0 = far)
 }
 """
@@ -244,7 +254,7 @@ void main() {
     float sh = rt_shadow(v_world + N * 0.03, L, -1);
     float att = sun_atten(v_world);
     float diff = max(dot(N, L), 0.0);
-    float c = (u_rt > 0.5) ? rt_flux(v_world, 0.0) * 0.5
+    float c = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                            : caustics(v_world.xz * 0.16, u_time * 0.55);
     float shallow = smoothstep(-6.0, 0.0, v_world.z);   // brighter nearer the glass
     vec3 col = v_col * (ambient(N) + u_sunCol * diff * 0.75 * sh * att)
@@ -431,7 +441,7 @@ void main() {
     float att = sun_atten(v_world);
     vec3 lit = ambient(N) + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
     vec3 col = albedo * lit;
-    float cz = (u_rt > 0.5) ? rt_flux(v_world, 0.0) * 0.5
+    float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
     col += albedo * u_sunCol * att * sh * cz * 0.35 * max(N.y, 0.0);
     vec3 H = normalize(L + V);
@@ -498,7 +508,7 @@ void main() {
     float att = sun_atten(v_world);
     vec3 lit = ambient(N) + u_sunCol * att * sh * (0.45 * abs(dot(N, L)) + trans);
     vec3 col = albedo * lit;
-    float cz = (u_rt > 0.5) ? rt_flux(v_world, 0.0) * 0.5
+    float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.1, u_time * 0.55);
     col += albedo * u_sunCol * att * sh * cz * 0.25;
     o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
@@ -869,10 +879,11 @@ void main() {
     if (rd.y < 0.004) { o_col = vec4(bgc, 1.0); return; }
 
     float t = (u_surf - ro.y) / rd.y;
+    float detail = clamp(1.45 - t * 0.045, 0.0, 1.0);        // fewer small waves with distance
     vec3 hit = ro + rd * t;
-    t += (surf_h(hit.xz, u_time) - hit.y) / rd.y;
+    t += (surf_h_lod(hit.xz, u_time, detail) - hit.y) / rd.y;
     hit = ro + rd * t;
-    vec3 n = -surf_normal(hit.xz, u_time);
+    vec3 n = -surf_normal_lod(hit.xz, u_time, detail);
     vec3 R = reflect(rd, n);
     float window = smoothstep(0.58, 0.72, abs(dot(rd, n)));   // Snell's window: sky shows through
 
@@ -903,7 +914,7 @@ void main() {
         tt = te;
     } else if (tf > 0.0) {
         vec3 hp = hit + R * tf;
-        float flux = rt_flux(hp, 1.0) * 0.5;
+        float flux = rt_flux(hp, 2.0 + log2(1.0 + tf * 0.25)) * 0.5;
         col = vec3(0.80, 0.72, 0.52) * (ambient(vec3(0.0, 1.0, 0.0))
             + u_sunCol * sun_atten(hp) * (0.7 + 0.9 * flux));
         tt = tf;
