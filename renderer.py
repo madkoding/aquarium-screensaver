@@ -30,9 +30,9 @@ from sim import INST_FLOATS, Sim
 MAX_JELLY = 8
 BUBBLE_SOURCES = 14
 RT_QUALITY = {   # volume downscale, ray-march steps, mirror downscale
-    "low": dict(vol_div=3, steps=14, mirror_div=3.0),
-    "medium": dict(vol_div=2, steps=24, mirror_div=1.5),
-    "high": dict(vol_div=2, steps=32, mirror_div=1.5),
+    "low": dict(vol_div=4, steps=12, mirror_div=3.0),
+    "medium": dict(vol_div=3, steps=20, mirror_div=2.0),
+    "high": dict(vol_div=2, steps=28, mirror_div=1.5),
 }
 U_GRID, U_OCC, U_CAUS, U_MIRROR, U_SCENE, U_REFR = 3, 4, 5, 6, 7, 8   # texture units
 
@@ -83,6 +83,7 @@ class AquariumRenderer:
             bg=prog(S.FULLSCREEN_VS, S.BG_FS),
             floor=prog(S.FLOOR_VS, S.FLOOR_FS),
             fish=prog(S.FISH_VS, S.FISH_FS),
+            fins=prog(S.FISH_VS, S.FIN_FS),
             kelp=prog(S.KELP_VS, S.KELP_FS),
             bell=prog(S.JELLY_BELL_VS, S.JELLY_BELL_FS),
             tent=prog(S.JELLY_TENT_VS, S.JELLY_TENT_FS),
@@ -96,34 +97,42 @@ class AquariumRenderer:
             mirror=prog(S.FULLSCREEN_VS, S.MIRROR_FS),
             vol=prog(S.FULLSCREEN_VS, S.VOL_FS),
             blit=prog(S.FULLSCREEN_VS, S.BLIT_FS),
+            dof=prog(S.FULLSCREEN_VS, S.DOF_FS),
         )
 
     def _build_geometry(self, rng):
         c, p = self.ctx, self.p
         buf = lambda a: c.buffer(np.ascontiguousarray(a).tobytes())
 
-        v, i, static_occ = meshes.build_seabed(rng)
-        self.occ = rt.OccluderSet(static_occ)
+        v, i, static_occ, anemones = meshes.build_seabed(rng)
+        kelp, kelp_occ = meshes.build_kelp_instances(rng)
+        foliage = np.concatenate([kelp, meshes.build_seagrass_instances(rng),
+                                  meshes.build_anemone_instances(rng, anemones)])
+        self.occ = rt.OccluderSet(np.concatenate([static_occ, kelp_occ]))   # kelp forests shade too
         self.vao_floor = c.vertex_array(
-            p["floor"], [(buf(v), "3f 3f 3f", "in_pos", "in_nrm", "in_col")],
+            p["floor"], [(buf(v), "3f 3f 3f 1f 2f", "in_pos", "in_nrm", "in_col", "in_mat", "in_uv")],
             index_buffer=buf(i))
 
-        v, i = meshes.build_fish()
+        v, body_i, fin_i = meshes.build_fish()
+        fish_vbo = buf(v)
         self.fish_inst = c.buffer(reserve=max(1, self.sim.N) * INST_FLOATS * 4, dynamic=True)
-        self.vao_fish = c.vertex_array(
-            p["fish"],
-            [(buf(v), "3f 3f 2f 1f 3f", "in_pos", "in_nrm", "in_uv", "in_part", "in_pivot"),
-             (self.fish_inst, "3f 3f 4f 4f 4f 3f 3f 3f/i", "i_pos", "i_fwd", "i_size",
-              "i_fin", "i_anim", "i_c1", "i_c2", "i_c3")],
-            index_buffer=buf(i))
+
+        def fish_vao(program, indices):
+            return c.vertex_array(
+                program,
+                [(fish_vbo, "3f 3f 2f 1f 3f", "in_pos", "in_nrm", "in_uv", "in_part", "in_pivot"),
+                 (self.fish_inst, "3f 3f 4f 4f 4f 3f 3f 3f/i", "i_pos", "i_fwd", "i_size",
+                  "i_fin", "i_anim", "i_c1", "i_c2", "i_c3")],
+                index_buffer=buf(indices))
+        self.vao_fish = fish_vao(p["fish"], body_i)       # opaque body
+        self.vao_fins = fish_vao(p["fins"], fin_i)        # translucent fins
 
         v, i = meshes.build_ribbon()
-        kelp = meshes.build_kelp_instances(rng)
-        self.n_kelp = len(kelp)
+        self.n_kelp = len(foliage)
         self.vao_kelp = c.vertex_array(
             p["kelp"],
             [(buf(v), "2f", "in_uv"),
-             (buf(kelp), "3f 4f 3f/i", "i_base", "i_dim", "i_col")],
+             (buf(foliage), "3f 4f 3f 1f/i", "i_base", "i_dim", "i_col", "i_kind")],
             index_buffer=buf(i))
 
         self.jelly_inst = c.buffer(reserve=MAX_JELLY * 8 * 4, dynamic=True)
@@ -141,7 +150,7 @@ class AquariumRenderer:
 
         self.vao_empty = {k: c.vertex_array(p[k], []) for k in
                           ("bg", "rays", "down", "blur", "final", "bubble", "snow",
-                           "mirror", "vol", "blit")}
+                           "mirror", "vol", "blit", "dof")}
         quality = self.cfg["quality"]
         self.n_bubbles = BUBBLE_SOURCES * {"low": 14, "medium": 22, "high": 30}[quality]
         self.n_snow = {"low": 250, "medium": 500, "high": 800}[quality]
@@ -171,6 +180,7 @@ class AquariumRenderer:
                 depth_attachment=c.depth_renderbuffer((sw, sh)))
         self.refr_tex, self.refr_fbo = tex(sw, sh)       # opaque scene, for refraction
         self.post_tex, self.post_fbo = tex(sw, sh)       # tone-mapped frame fed to FSR
+        self.dof_tex, self.dof_fbo = tex(sw, sh)         # depth-of-field result
         self.q = [tex(sw // 4, sh // 4), tex(sw // 4, sh // 4),
                   tex(sw // 16, sh // 16), tex(sw // 16, sh // 16)]
 
@@ -326,6 +336,7 @@ class AquariumRenderer:
         # premultiplied alpha for colour; keep the alpha channel (distance) intact
         ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA, moderngl.ZERO, moderngl.ONE)
         fbo.depth_mask = False
+        self.vao_fins.render(moderngl.TRIANGLES, instances=sim.N)      # translucent fins
         if sim.J:
             self.vao_bell.render(moderngl.TRIANGLES, instances=sim.J)
             self.vao_tent.render(moderngl.TRIANGLES, instances=sim.J)
@@ -345,9 +356,12 @@ class AquariumRenderer:
         if self.rt_on:
             self._volume_pass()
 
+        src = self.scene_tex
+        if self.cfg["dof"] > 0.02:
+            src = self._dof_pass(t)
         bloom = float(self.cfg["bloom"])
         if bloom > 0:
-            self._blur_chain(self.scene_tex, self.q[0], self.q[1])
+            self._blur_chain(src, self.q[0], self.q[1])
             self._blur_chain(self.q[0][0], self.q[2], self.q[3])
 
         vw, vh = self.size
@@ -357,7 +371,7 @@ class AquariumRenderer:
         else:
             ctx.screen.use()
             ctx.viewport = (0, 0, vw, vh)
-        self.scene_tex.use(0)
+        src.use(0)
         self.q[0][0].use(1)
         self.q[2][0].use(2)
         f = self.p["final"]
@@ -367,10 +381,14 @@ class AquariumRenderer:
         self._set(f, "u_g2", bloom * 1.3)
         self._set(f, "u_vig", float(self.cfg["vignette"]))
         self._set(f, "u_dither", 0.0 if self.fsr else 1.0)
+        lens = float(self.cfg["lens"])
+        self._set(f, "u_ca", lens)
+        self._set(f, "u_grain", 0.0 if self.fsr else lens)
         self.vao_empty["final"].render(moderngl.TRIANGLES, vertices=3)
         if self.fsr:
             self.fsr.upscale(self.post_tex, (sw, sh), ctx.screen, (vw, vh),
-                             sharpness=float(self.cfg["sharpness"]), dither=1.0)
+                             sharpness=float(self.cfg["sharpness"]), dither=1.0,
+                             grain=lens, time=t)
 
     # --------------------------------------------------------- ray-tracing passes
     def _caustic_pass(self):
@@ -414,6 +432,22 @@ class AquariumRenderer:
         self._set(self.p["blit"], "u_tex", 0)
         self.vao_empty["blit"].render(moderngl.TRIANGLES, vertices=3)
         ctx.disable(moderngl.BLEND)
+
+    def _dof_pass(self, t):
+        """Depth of field from the distance stored in the scene's alpha channel."""
+        ctx = self.ctx
+        sw, sh = self.scene_size
+        self.dof_fbo.use()
+        ctx.viewport = (0, 0, sw, sh)
+        self.scene_tex.use(0)
+        d = self.p["dof"]
+        self._set(d, "u_scene", 0)
+        self._set(d, "u_texel", (1.0 / sw, 1.0 / sh))
+        self._set(d, "u_focus", float(8.5 + 3.0 * np.sin(t * 0.045)))   # slow focus breathing
+        self._set(d, "u_strength", float(self.cfg["dof"] * 0.006 * sh))
+        self._set(d, "u_time", float(t))
+        self.vao_empty["dof"].render(moderngl.TRIANGLES, vertices=3)
+        return self.dof_tex
 
     def _blur_chain(self, src_tex, a, b):
         ctx = self.ctx

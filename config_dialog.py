@@ -16,6 +16,8 @@ SLIDERS = [  # (key, label, from, to, decimals)
     ("jellyfish", "Jellyfish", 0, 8, 0),
     ("bloom", "Bloom (glow)", 0.0, 1.0, 2),
     ("vignette", "Vignette", 0.0, 1.0, 2),
+    ("dof", "Depth of field", 0.0, 1.0, 2),
+    ("lens", "Lens fringing and film grain", 0.0, 1.0, 2),
     ("sharpness", "FSR sharpening (0 = sharpest)", 0.0, 2.0, 2),
 ]
 CHECKS = [

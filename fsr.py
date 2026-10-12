@@ -186,6 +186,8 @@ RCAS_FS = """
 uniform sampler2D u_src;
 uniform float u_sharp;      // exp2(-stops): 1 = maximum sharpness
 uniform float u_dither;     // optional dither amplitude in 1/255 units (0 = off)
+uniform float u_grain;      // optional film grain amplitude (0 = off)
+uniform float u_time;
 out vec4 o_col;
 
 const float FSR_RCAS_LIMIT = 0.25 - 1.0 / 16.0;   // the limit of natural-looking sharpening
@@ -226,6 +228,8 @@ void main() {
     float rcpL = aprxMedRcp(4.0 * lobe + 1.0);
     vec3 pix = (lobe * b + lobe * d + lobe * h + lobe * f + e) * rcpL;
     pix += (hash12(gl_FragCoord.xy) - 0.5) * (u_dither / 255.0);
+    pix += (hash12(gl_FragCoord.xy * 1.37 + fract(u_time * 7.0) * 131.0) - 0.5) * u_grain * 0.06
+         * (1.0 - 0.6 * clamp(dot(pix, vec3(0.3, 0.59, 0.11)), 0.0, 1.0));
     o_col = vec4(pix, 1.0);
 }
 """
@@ -252,7 +256,8 @@ class FSR:
             self._mid_size = tuple(size)
         return self._mid
 
-    def upscale(self, src_tex, src_size, dst_fbo, dst_size, sharpness=0.2, dither=0.0):
+    def upscale(self, src_tex, src_size, dst_fbo, dst_size, sharpness=0.2, dither=0.0,
+                grain=0.0, time=0.0):
         """Scale `src_tex` (src_size) into `dst_fbo` (dst_size).
 
         sharpness is in stops: 0.0 = maximum sharpening, larger = softer
@@ -277,4 +282,6 @@ class FSR:
         self.rcas["u_src"].value = 0
         self.rcas["u_sharp"].value = float(2.0 ** (-sharpness))
         self.rcas["u_dither"].value = float(dither)
+        self.rcas["u_grain"].value = float(grain)
+        self.rcas["u_time"].value = float(time)
         self.vao_rcas.render(moderngl.TRIANGLES, vertices=3)

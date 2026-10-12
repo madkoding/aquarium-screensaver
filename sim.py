@@ -8,7 +8,7 @@ import numpy as np
 
 import world
 
-PATTERN = dict(neon=0, clown=1, tang=2, shark=3, angel=4, tuna=5)
+PATTERN = dict(neon=0, clown=1, tang=2, shark=3, angel=4, tuna=5, lion=6, discus=7)
 
 # colors: (back, belly, accent) variants; accent meaning depends on the pattern
 SPECIES = {
@@ -34,12 +34,20 @@ SPECIES = {
         len=(1.25, 1.55), sy=0.95, sz=1.0, tail=1.5, dorsal=0.6, pect=0.8, amp=1.2,
         pattern="tuna", speed=(1.4, 1.9), group=(1, 2), band=(0.3, 0.9), z=(-12, -3),
         colors=[((0.05, 0.16, 0.38), (0.85, 0.88, 0.92), (0.95, 0.80, 0.10))]),
+    "discus": dict(
+        len=(0.55, 0.70), sy=2.4, sz=0.50, tail=1.0, dorsal=1.8, pect=1.0, amp=0.5,
+        pattern="discus", speed=(0.25, 0.45), group=(3, 5), band=(0.3, 0.8), z=(-6, 0.5),
+        colors=[((0.12, 0.62, 0.68), (0.95, 0.62, 0.35), (0.85, 0.16, 0.10))]),
+    "lionfish": dict(
+        len=(0.45, 0.55), sy=1.2, sz=1.0, tail=1.0, dorsal=2.6, pect=3.0, amp=0.5,
+        pattern="lion", speed=(0.2, 0.4), group=(1, 2), band=(0.05, 0.4), z=(-5, 0),
+        colors=[((0.55, 0.12, 0.08), (0.92, 0.86, 0.72), (0.95, 0.9, 0.8))]),
     "shark": dict(
         len=(3.2, 3.8), sy=0.9, sz=1.0, tail=1.6, dorsal=1.0, pect=1.1, amp=1.1,
         pattern="shark", speed=(0.9, 1.1), group=(1, 1), band=(0.4, 0.8), z=(-13, -9),
         colors=[((0.36, 0.40, 0.46), (0.88, 0.90, 0.92), (0.2, 0.2, 0.22))]),
 }
-RECIPE = ["tetra", "angel", "clown", "tang", "tetra", "tuna", "clown", "tang"]
+RECIPE = ["tetra", "angel", "clown", "tang", "tetra", "discus", "tuna", "clown", "lionfish", "tang"]
 INST_FLOATS = 27   # pos3 fwd3 size4 fin4 anim4 c1(3) c2(3) c3(3)
 
 
@@ -89,6 +97,8 @@ class Sim:
         self.len = np.array([r["len"] for r in rows])
         self.spd = np.array([r["speed"] for r in rows])
         self.is_shark = np.array([groups[g]["name"] == "shark" for g in gid])
+        sharks = np.nonzero(self.is_shark)[0]
+        self.shark_idx = int(sharks[0]) if len(sharks) else None
         self.static = self._pack_static()
 
         self.wp = np.zeros((self.G, 3))
@@ -195,9 +205,18 @@ class Sim:
         self.wander *= 1.0 - 0.8 * dt
         acc += self.wander * 0.35 * self.spd[:, None]
 
+        # everyone but the shark flees when it comes close
+        boost = 1.0
+        if self.shark_idx is not None:
+            away = pos - pos[self.shark_idx]
+            dist_s = np.linalg.norm(away, axis=1, keepdims=True) + 1e-6
+            fear = np.clip((6.0 - dist_s) / 6.0, 0.0, 1.0) * (~self.is_shark)[:, None]
+            acc += away / dist_s * fear * 9.0
+            boost = 1.0 + 0.8 * fear
+
         vel += acc * dt
         sp = np.linalg.norm(vel, axis=1, keepdims=True) + 1e-9
-        target = np.clip(sp, 0.55 * self.spd[:, None], 1.25 * self.spd[:, None])
+        target = np.clip(sp, 0.55 * self.spd[:, None], 1.25 * self.spd[:, None] * boost)
         vel *= target / sp
         pos += vel * dt
 

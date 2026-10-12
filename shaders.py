@@ -160,6 +160,11 @@ float rt_shadow(vec3 p, vec3 L, int skip) {
         if (idf < 0.0) break;
         int id = int(idf + 0.5);
         if (id == skip) continue;
+        vec3 oc = p - texelFetch(u_occ, ivec2(id, 0), 0).xyz;
+        float rmax = texelFetch(u_occ, ivec2(id, 3), 0).w;
+        float b = dot(oc, L);
+        float margin = rmax + 0.12 * max(-b, 0.0) + 0.05;       // penumbra grows with distance
+        if ((b > 0.0 && dot(oc, oc) > rmax * rmax) || dot(oc, oc) - b * b > margin * margin) continue;
         vis *= occ_soft(load_occ(id), p, L);
     }
     return vis;
@@ -197,6 +202,37 @@ vec3 refracted_bg(vec2 uv, vec2 off, float disp) {
 """
 COMMON = COMMON + REFR_COMMON
 
+# Value noise, fbm and a gradient-based bump mapper for procedural materials.
+NOISE_COMMON = """
+float vhash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float vnoise3(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(vhash(i + vec3(0, 0, 0)), vhash(i + vec3(1, 0, 0)), f.x),
+                   mix(vhash(i + vec3(0, 1, 0)), vhash(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(vhash(i + vec3(0, 0, 1)), vhash(i + vec3(1, 0, 1)), f.x),
+                   mix(vhash(i + vec3(0, 1, 1)), vhash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+float fbm3(vec3 p) { return 0.5 * vnoise3(p) + 0.25 * vnoise3(p * 2.03) + 0.125 * vnoise3(p * 4.1); }
+float fbm2(vec3 p) { return 0.65 * vnoise3(p) + 0.35 * vnoise3(p * 2.1); }
+
+// Perturb N with the gradient of fbm noise sampled at p (4-tap tetrahedron).
+vec3 bump_normal(vec3 N, vec3 p, float amt) {
+    const vec2 k = vec2(1.0, -1.0);
+    const float e = 0.012;
+    vec3 g = k.xyy * fbm2(p + k.xyy * e) + k.yyx * fbm2(p + k.yyx * e)
+           + k.yxy * fbm2(p + k.yxy * e) + k.xxx * fbm2(p + k.xxx * e);
+    g /= 4.0 * e;
+    return normalize(N - amt * (g - N * dot(N, g)));
+}
+"""
+COMMON = COMMON + NOISE_COMMON
+
 # ------------------------------------------------------------- background
 FULLSCREEN_VS = """
 #version 330
@@ -229,17 +265,30 @@ FLOOR_VS = """
 #version 330
 uniform mat4 u_view;
 uniform mat4 u_proj;
+uniform float u_time;
 in vec3 in_pos;
 in vec3 in_nrm;
 in vec3 in_col;
+in float in_mat;
+in vec2 in_uv;
 out vec3 v_world;
 out vec3 v_nrm;
 out vec3 v_col;
+out vec2 v_uv;
+flat out float v_mat;
 void main() {
-    v_world = in_pos;
+    vec3 p = in_pos;
+    if (in_mat > 5.5) {                                // sea fans sway with the current
+        float sw = sin(u_time * 0.7 + in_pos.x * 1.3 + in_pos.z * 0.9) * 0.07 * in_uv.y * in_uv.y;
+        p.x += sw;
+        p.z += sw * 0.6;
+    }
+    v_world = p;
     v_nrm = in_nrm;
     v_col = in_col;
-    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+    v_uv = in_uv;
+    v_mat = in_mat;
+    gl_Position = u_proj * u_view * vec4(p, 1.0);
 }
 """
 
@@ -247,19 +296,57 @@ FLOOR_FS = "#version 330\n" + COMMON + """
 in vec3 v_world;
 in vec3 v_nrm;
 in vec3 v_col;
+in vec2 v_uv;
+flat in float v_mat;
 out vec4 o_col;
 void main() {
+    int mat = int(v_mat + 0.5);
     vec3 N = normalize(v_nrm);
+    if (mat == 6) {                                    // sea fan: a lattice cut out of a plane
+        if (!gl_FrontFacing) N = -N;
+        float u = v_uv.x, v = v_uv.y;
+        float edge = 0.5 * (0.25 + 0.75 * v);
+        float l1 = abs(fract(u * 9.0 + v * 6.0) - 0.5);
+        float l2 = abs(fract(u * 9.0 - v * 6.0) - 0.5);
+        float rib = abs(u - 0.5) < 0.012 ? 0.0 : 1.0;
+        if (min(min(l1, l2), 0.5 * rib) > 0.13) discard;
+    }
+    vec3 albedo = v_col;
+    float dist = length(u_camPos - v_world);
+    float near = exp(-dist * 0.10);                    // fade fine detail with distance (no shimmer)
+    float gloss = 0.0;
+    if (mat == 0) {                                    // sand: grain and wind ripples
+        albedo *= 0.86 + 0.26 * fbm2(v_world * vec3(5.0, 1.0, 5.0));
+        if (near > 0.12) N = bump_normal(N, v_world * 16.0, 0.28 * near);
+    } else if (mat == 1) {                             // rock: strata, cracks, moss on top
+        float n = fbm3(v_world * 2.4);
+        float strata = 0.5 + 0.5 * sin(v_world.y * 16.0 + n * 5.0);
+        albedo *= (0.62 + 0.55 * n) * (0.9 + 0.2 * strata);
+        float moss = smoothstep(0.55, 0.9, N.y) * smoothstep(0.45, 0.7, fbm3(v_world * 5.0 + 3.0));
+        albedo = mix(albedo, vec3(0.16, 0.32, 0.10), moss * 0.7);
+        if (near > 0.10) N = bump_normal(N, v_world * 5.0, 0.7 * near);
+    } else if (mat == 3) {                             // pebbles: smooth and a little glossy
+        albedo *= 0.9 + 0.2 * vnoise3(v_world * 60.0);
+        gloss = 0.25;
+    } else if (mat != 6) {                             // corals: polyps
+        albedo *= 0.78 + 0.45 * smoothstep(0.35, 0.65, vnoise3(v_world * 34.0));
+        if (near > 0.12) N = bump_normal(N, v_world * 24.0, 0.5 * near);
+        gloss = 0.12;
+    }
+
     vec3 L = normalize(u_sunDir);
+    vec3 V = normalize(u_camPos - v_world);
     float sh = rt_shadow(v_world + N * 0.03, L, -1);
     float att = sun_atten(v_world);
     float diff = max(dot(N, L), 0.0);
     float c = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                            : caustics(v_world.xz * 0.16, u_time * 0.55);
     float shallow = smoothstep(-6.0, 0.0, v_world.z);   // brighter nearer the glass
-    vec3 col = v_col * (ambient(N) + u_sunCol * diff * 0.75 * sh * att)
-             + v_col * u_sunCol * c * sh * att * (0.55 + 0.9 * shallow);
-    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
+    vec3 col = albedo * (ambient(N) + u_sunCol * diff * 0.75 * sh * att)
+             + albedo * u_sunCol * c * sh * att * (0.55 + 0.9 * shallow);
+    if (mat == 6) col += albedo * u_sunCol * att * sh * pow(max(-dot(N, L), 0.0), 1.5) * 0.5;   // light through the fan
+    col += gloss * pow(max(dot(N, normalize(L + V)), 0.0), 60.0) * u_sunCol * sh * att;
+    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), dist);
 }
 """
 
@@ -290,6 +377,7 @@ flat out float v_part;
 flat out float v_pattern;
 flat out float v_sy;
 flat out int v_id;
+flat out vec3 v_fwd;
 flat out vec3 v_c1;
 flat out vec3 v_c2;
 flat out vec3 v_c3;
@@ -336,6 +424,7 @@ void main() {
     v_pattern = i_anim.z;
     v_sy = i_size.y;
     v_id = gl_InstanceID;
+    v_fwd = X;
     v_c1 = i_c1;
     v_c2 = i_c2;
     v_c3 = i_c3;
@@ -343,7 +432,9 @@ void main() {
 }
 """
 
-FISH_FS = "#version 330\n" + COMMON + """
+# Body and fins share the same helper functions; fins are drawn in a second,
+# alpha-blended pass because they are thin translucent membranes.
+FISH_FUNCS = """
 in vec3 v_world;
 in vec3 v_nrm;
 in vec2 v_uv;
@@ -353,6 +444,7 @@ flat in float v_part;
 flat in float v_pattern;
 flat in float v_sy;
 flat in int v_id;
+flat in vec3 v_fwd;
 flat in vec3 v_c1;
 flat in vec3 v_c2;
 flat in vec3 v_c3;
@@ -391,11 +483,18 @@ vec3 body_color(int pat, float t, float v, out float emis) {
         col = mix(col, v_c3, band(t, 0.30, 0.045));
         col = mix(col, v_c3, band(t, 0.52, 0.060));
         col = mix(col, v_c3 * 1.5, band(t, 0.86, 0.03));
+    } else if (pat == 6) {                            // lionfish: fine vertical stripes
+        float st = smoothstep(0.35, 0.65, 0.5 + 0.5 * sin(t * 62.0));
+        col = mix(v_c1, v_c2, st);
+        col *= 0.85 + 0.25 * smoothstep(-0.3, 0.5, v);
+    } else if (pat == 7) {                            // discus: wavy horizontal stripes
+        float w = 0.5 + 0.5 * sin(v * 13.0 + sin(t * 9.0) * 2.2);
+        col = mix(v_c1, v_c3, smoothstep(0.62, 0.80, w) * 0.85);
+        col = mix(v_c2 * 0.9, col, smoothstep(-0.7, 0.2, v));
     } else {                                          // tuna: lateral yellow line
         col = mix(v_c2, v_c1, smoothstep(-0.30, 0.40, v));
         col = mix(col, v_c3, smoothstep(0.10, 0.0, abs(v - 0.05)) * 0.5 * step(0.2, t));
     }
-    col *= 0.95 + 0.05 * sin(t * 220.0) * sin(v * 50.0 + t * 60.0);   // scale sheen
     return col;
 }
 
@@ -406,31 +505,44 @@ vec3 fin_color(int pat, float along, float outv) {
     else if (pat == 2) c = (v_part < 1.5) ? vec3(1.0, 0.82, 0.10) : mix(v_c1, v_c3, smoothstep(0.7, 1.0, outv));
     else if (pat == 3) c = v_c1 * 0.8;
     else if (pat == 4) c = mix(v_c1 * 0.9, v_c3, smoothstep(0.55, 1.0, outv));
+    else if (pat == 6) c = mix(v_c1, v_c2, step(0.5, fract(along * 14.0)));
+    else if (pat == 7) c = mix(v_c1, v_c3, smoothstep(0.4, 1.0, outv));
     else c = (v_part < 2.5) ? v_c1 : vec3(0.95, 0.8, 0.1);
     return c * (0.82 + 0.18 * sin(along * 80.0));
 }
+"""
 
+FISH_FS = "#version 330\n" + COMMON + FISH_FUNCS + """
 void main() {
     vec3 N = normalize(v_nrm);
-    int part = int(v_part + 0.5);
     int pat = int(v_pattern + 0.5);
-    if (part != 0 && !gl_FrontFacing) N = -N;
-
+    float t = v_uv.x;
+    float v = v_uv.y;
     float emis = 0.0;
-    vec3 albedo;
-    if (part == 0) {
-        albedo = body_color(pat, v_uv.x, v_uv.y, emis);
-        // eye: ring + pupil on the side-facing flanks
-        vec2 e = vec2(v_local.x - 0.375, (v_local.y - 0.03) * v_sy);
-        float d = length(e);
-        if (abs(v_nloc.z) > 0.35 && v_local.x > 0.30) {
-            albedo = mix(albedo, vec3(0.92, 0.82, 0.45), smoothstep(0.034, 0.030, d));
-            albedo = mix(albedo, vec3(0.01), smoothstep(0.022, 0.019, d));
-            albedo += vec3(1.0) * smoothstep(0.008, 0.004, length(e - vec2(0.006, 0.008)));
-        }
-    } else {
-        albedo = fin_color(pat, v_uv.x, v_uv.y);
+    vec3 albedo = body_color(pat, t, v, emis);
+
+    // gills and mouth
+    float gill = smoothstep(0.012, 0.0, abs(t - 0.215 - 0.045 * v * v)) * step(-0.65, v) * step(v, 0.85);
+    albedo = mix(albedo * (1.0 - 0.45 * gill), vec3(0.45, 0.08, 0.08), gill * 0.25);
+    albedo *= 1.0 - 0.7 * smoothstep(0.012, 0.0, abs(v + 0.28)) * smoothstep(0.08, 0.02, t);
+
+    // eye: iris ring + pupil on the side-facing flanks
+    vec2 e = vec2(v_local.x - 0.375, (v_local.y - 0.03) * v_sy);
+    float d = length(e);
+    float eyeMask = (abs(v_nloc.z) > 0.35 && v_local.x > 0.30) ? smoothstep(0.034, 0.030, d) : 0.0;
+    if (eyeMask > 0.0) {
+        albedo = mix(albedo, vec3(0.92, 0.82, 0.45), eyeMask);
+        albedo = mix(albedo, vec3(0.01), smoothstep(0.022, 0.019, d) * eyeMask);
+        albedo += vec3(1.0) * smoothstep(0.008, 0.004, length(e - vec2(0.006, 0.008))) * eyeMask;
     }
+
+    // scales: tiny bumps perturb the normal (smoother on sharks)
+    float scaleAmt = (pat == 3) ? 0.10 : ((pat == 5 || pat == 0) ? 0.30 : 0.22);
+    vec2 sc = vec2(t * 170.0, v * 20.0 + t * 55.0);
+    float dA = cos(sc.x) * sin(sc.y);
+    float dB = sin(sc.x) * cos(sc.y);
+    N = normalize(N + (v_fwd * dA + cross(N, v_fwd) * dB) * 0.10 * scaleAmt * (1.0 - eyeMask));
+    albedo *= 0.94 + 0.06 * sin(sc.x) * sin(sc.y);
 
     vec3 L = normalize(u_sunDir);
     vec3 V = normalize(u_camPos - v_world);
@@ -439,19 +551,61 @@ void main() {
     float wrap = max((ndl + 0.6) / 1.6, 0.0);
     float sh = rt_shadow(v_world + N * 0.01, L, u_nstatic + v_id);
     float att = sun_atten(v_world);
+    float ndv = max(dot(N, V), 0.0);
     vec3 lit = ambient(N) + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
     vec3 col = albedo * lit;
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
     col += albedo * u_sunCol * att * sh * cz * 0.35 * max(N.y, 0.0);
+
+    // subsurface scattering: backlit thin edges glow with the light passing through
+    float back = pow(max(dot(V, -L), 0.0), 2.0);
+    col += albedo * u_sunCol * att * sh * back * pow(1.0 - ndv, 1.5) * 0.8;
+    // thin-film iridescence on shiny species
+    if (pat == 0 || pat == 4 || pat == 5) {
+        vec3 irid = 0.5 + 0.5 * cos(6.2831853 * (ndv * 1.2 + vec3(0.0, 0.33, 0.67)));
+        col += albedo * irid * 0.14 * pow(1.0 - ndv, 1.5) * (0.3 + 0.7 * att * sh);
+    }
+
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 70.0) * (part == 0 ? 0.55 : 0.12) * sh;
+    float spec = pow(max(dot(N, H), 0.0), 70.0) * 0.55 * sh;
+    spec += eyeMask * pow(max(dot(N, H), 0.0), 300.0) * 3.0 * sh;      // wet, glossy eye
     col += spec * u_sunCol;
-    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    float rim = pow(1.0 - ndv, 3.0);
     col += rim * vec3(0.10, 0.26, 0.36) * (0.4 + 0.6 * u_day);
     col += albedo * emis * 0.9;                       // neon stripes glow (feeds the bloom)
 
     o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
+}
+"""
+
+# Fins: translucent membranes, thicker near the body, lit from both sides, with
+# extra glow when the sun shines through them.
+FIN_FS = "#version 330\n" + COMMON + FISH_FUNCS + """
+void main() {
+    vec3 N = normalize(v_nrm);
+    if (!gl_FrontFacing) N = -N;
+    int part = int(v_part + 0.5);
+    int pat = int(v_pattern + 0.5);
+    vec3 albedo = fin_color(pat, v_uv.x, v_uv.y);
+
+    float ray = 0.5 + 0.5 * sin(v_uv.x * 90.0 + float(part) * 1.7);
+    float base = smoothstep(0.30, 0.0, v_uv.y);
+    float alpha = mix(0.38, 0.84, 0.55 * ray + 0.45);
+    alpha = max(alpha * mix(1.0, 0.7, smoothstep(0.5, 1.0, v_uv.y)), base * 0.92);
+
+    vec3 L = normalize(u_sunDir);
+    float sh = rt_shadow(v_world, L, u_nstatic + v_id);
+    float att = sun_atten(v_world);
+    float ndl = dot(N, L);
+    float through = pow(max(-ndl, 0.0), 1.4);          // sun shining through the membrane
+    vec3 lit = ambient(N) + u_sunCol * att * sh * (0.40 * abs(ndl) + 0.75 * through);
+    vec3 col = albedo * lit;
+    float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
+                            : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
+    col += albedo * u_sunCol * att * sh * cz * 0.25;
+    col = apply_fog(col, v_world, gl_FragCoord.xy / u_res);
+    o_col = vec4(col * alpha, alpha);                   // premultiplied
 }
 """
 
@@ -465,28 +619,34 @@ in vec2 in_uv;       // u along the height, side -1..1
 in vec3 i_base;
 in vec4 i_dim;       // height, width, phase, yaw
 in vec3 i_col;
+in float i_kind;
 out vec3 v_world;
 out vec3 v_nrm;
 out vec3 v_col;
 out float v_u;
 out float v_side;
+flat out float v_kind;
 void main() {
     float u = in_uv.x;
     float side = in_uv.y;
     float h = i_dim.x;
-    float sway = sin(u_time * 0.9 + i_dim.z + u * 2.8) * 0.22
-               + sin(u_time * 0.45 + i_dim.z * 1.7 + u * 1.3) * 0.12;
+    bool anem = i_kind > 0.5 && i_kind < 1.5;
+    float sway = (sin(u_time * 0.9 + i_dim.z + u * 2.8) * 0.22
+               + sin(u_time * 0.45 + i_dim.z * 1.7 + u * 1.3) * 0.12) * (anem ? 1.6 : 1.0);
     vec3 lat = vec3(cos(i_dim.w), 0.0, sin(i_dim.w));
     vec3 across = vec3(-lat.z, 0.0, lat.x);
-    float amp = u * u * h * 0.45;
-    float width = i_dim.y * (1.0 - 0.65 * u) * (0.85 + 0.25 * sin(u * 9.0 + i_dim.z));
+    float amp = u * u * h * (anem ? 0.80 : 0.45);
+    float width = anem ? i_dim.y * (1.0 - 0.75 * u)
+                       : i_dim.y * (1.0 - 0.65 * u) * (0.85 + 0.25 * sin(u * 9.0 + i_dim.z));
+    float current = sin(u_time * 0.25 + i_base.x * 0.08) * 0.12 * u * u * h;      // slow shared surge
     vec3 world = i_base + vec3(0.0, u * h - sway * sway * amp * 0.15, 0.0)
-               + across * sway * amp + lat * side * width;
+               + across * (sway * amp + current) + lat * side * width;
     v_world = world;
     v_nrm = across;
     v_col = i_col;
     v_u = u;
     v_side = side;
+    v_kind = i_kind;
     gl_Position = u_proj * u_view * vec4(world, 1.0);
 }
 """
@@ -497,6 +657,7 @@ in vec3 v_nrm;
 in vec3 v_col;
 in float v_u;
 in float v_side;
+flat in float v_kind;
 out vec4 o_col;
 void main() {
     vec3 N = normalize(v_nrm);
@@ -511,6 +672,8 @@ void main() {
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.1, u_time * 0.55);
     col += albedo * u_sunCol * att * sh * cz * 0.25;
+    if (v_kind > 0.5 && v_kind < 1.5)                       // anemone tentacles glow at the tips
+        col += v_col * 0.9 * smoothstep(0.55, 1.0, v_u) * (0.45 + 0.55 * u_day);
     o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
 }
 """
@@ -693,6 +856,7 @@ uniform mat4 u_proj;
 uniform float u_time;
 uniform float u_resy;
 out float v_alpha;
+out vec3 v_world;
 float h(float x) { return fract(sin(x * 91.7 + 17.3) * 43758.5453); }
 void main() {
     float id = float(gl_VertexID);
@@ -704,15 +868,19 @@ void main() {
     gl_Position = clip;
     gl_PointSize = max(0.012 * u_proj[1][1] * u_resy / clip.w, 1.5);
     v_alpha = (0.25 + 0.5 * h(id + 3.0)) * (0.6 + 0.4 * sin(u_time * 0.7 + id));
+    v_world = world;
 }
 """
 
 SNOW_FS = "#version 330\n" + COMMON + """
 in float v_alpha;
+in vec3 v_world;
 out vec4 o_col;
 void main() {
     vec2 c = gl_PointCoord * 2.0 - 1.0;
-    float a = smoothstep(1.0, 0.2, length(c)) * v_alpha * 0.55;
+    float lit = 1.0;
+    if (u_rt > 0.5) lit = rt_flux(v_world, 3.0) * rt_shadow(v_world, normalize(u_sunDir), -1);
+    float a = smoothstep(1.0, 0.2, length(c)) * v_alpha * 0.55 * (0.30 + 1.7 * lit);   // sparkles in light shafts
     o_col = vec4(vec3(0.6, 0.8, 0.9) * a * (0.4 + 0.6 * u_day), a * 0.6);
 }
 """
@@ -786,6 +954,8 @@ uniform float u_g1;
 uniform float u_g2;
 uniform float u_vig;
 uniform float u_dither;
+uniform float u_ca;
+uniform float u_grain;
 in vec2 uv;
 out vec4 o_col;
 float hash12(vec2 p) {
@@ -794,13 +964,19 @@ float hash12(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 void main() {
-    vec3 c = texture(u_scene, uv).rgb
+    vec2 dd = uv - 0.5;
+    float ca = u_ca * 0.004;                      // lens fringing grows toward the edges
+    vec3 c = vec3(texture(u_scene, uv + dd * ca).r,
+                  texture(u_scene, uv).g,
+                  texture(u_scene, uv - dd * ca).b)
            + texture(u_bloom1, uv).rgb * u_g1
            + texture(u_bloom2, uv).rgb * u_g2;
     vec2 d = (uv - 0.5) * vec2(u_res.x / u_res.y * 0.55, 1.0) * 2.0;
     c *= 1.0 - u_vig * smoothstep(0.55, 1.6, length(d));
     c = c / (1.0 + 0.12 * c);                    // gentle highlight roll-off
     c += (hash12(gl_FragCoord.xy + fract(u_time) * 91.0) - 0.5) / 255.0 * u_dither;   // de-band gradients
+    c += (hash12(gl_FragCoord.xy * 1.37 + fract(u_time * 7.0) * 131.0) - 0.5) * u_grain * 0.06
+         * (1.0 - 0.6 * clamp(dot(c, vec3(0.3, 0.59, 0.11)), 0.0, 1.0));      // film grain
     o_col = vec4(c, 1.0);
 }
 """
@@ -901,8 +1077,14 @@ void main() {
     int hid = -1;
     vec3 hn = vec3(0.0, 1.0, 0.0);
     for (int i = 0; i < u_nocc; i++) {
+        vec3 oc = hit - texelFetch(u_occ, ivec2(i, 0), 0).xyz;
+        float rmax = texelFetch(u_occ, ivec2(i, 3), 0).w;
+        float b = dot(oc, R);
+        if ((b > 0.0 && dot(oc, oc) > rmax * rmax) || dot(oc, oc) - b * b > rmax * rmax) continue;
+        Occ o = load_occ(i);
+        if (o.opac < 0.5) continue;
         vec3 nn;
-        float th = ell_hit(load_occ(i), hit, R, nn);
+        float th = ell_hit(o, hit, R, nn);
         if (th > 0.0 && th < te) { te = th; hid = i; hn = nn; }
     }
 
@@ -976,4 +1158,44 @@ uniform sampler2D u_tex;
 in vec2 uv;
 out vec4 o_col;
 void main() { o_col = vec4(texture(u_tex, uv).rgb, 0.0); }
+"""
+
+
+# Depth of field: gather blur whose radius follows the circle of confusion of
+# each pixel (distance is stored in the scene's alpha channel).
+DOF_FS = """
+#version 330
+uniform sampler2D u_scene;
+uniform vec2 u_texel;
+uniform float u_focus;
+uniform float u_strength;     // maximum blur radius in pixels
+uniform float u_time;
+in vec2 uv;
+out vec4 o_col;
+
+float coc(float dist) {
+    float d = dist > 0.0 ? dist : 60.0;
+    float k = (d < u_focus) ? 1.1 : 0.45;               // nearer objects blur more than far ones
+    return clamp(abs(1.0 / u_focus - 1.0 / d) * u_focus * k, 0.0, 1.0) * u_strength;
+}
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+void main() {
+    vec4 center = texture(u_scene, uv);
+    float cc = coc(center.a);
+    if (cc < 0.6) { o_col = center; return; }
+    float ang0 = ign(gl_FragCoord.xy + fract(u_time) * 40.0) * 6.2831853;
+    vec3 acc = center.rgb;
+    float wsum = 1.0;
+    for (int i = 0; i < 18; i++) {
+        float r = sqrt((float(i) + 0.5) / 18.0);
+        float a = ang0 + float(i) * 2.399963;
+        vec4 s = texture(u_scene, uv + vec2(cos(a), sin(a)) * r * cc * u_texel);
+        // a neighbour contributes if it lies behind us, or if its own blur reaches this far
+        float w = (s.a == 0.0 || s.a >= center.a - 0.25) ? 1.0 : smoothstep(0.0, 1.0, coc(s.a) - r * cc + 1.0);
+        acc += s.rgb * w;
+        wsum += w;
+    }
+    o_col = vec4(acc / wsum, center.a);
+}
 """

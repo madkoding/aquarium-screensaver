@@ -80,6 +80,7 @@ class OccluderSet:
         tex[1, :n, 0:3], tex[1, :n, 3] = recs[:, 3:6], recs[:, 7]
         tex[2, :n, 0], tex[2, :n, 1], tex[2, :n, 2] = recs[:, 8], recs[:, 9], recs[:, 10]
         tex[3, :n, 0:3] = recs[:, 11:14]
+        tex[3, :n, 3] = recs[:, 6:9].max(axis=1)        # bounding sphere for quick rejection
         return tex, grid.reshape(GRID_H, GRID_W * K), n
 
 

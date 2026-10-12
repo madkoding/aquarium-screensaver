@@ -30,12 +30,15 @@ DEFAULTS = {
     "vignette": 0.30,         # 0..1
     "camera_drift": True,     # slow, subtle camera sway
     "raytracing": True,       # traced shadows, caustics, light shafts, water mirror
-    "upscaling": "off",       # off | quality (1.5x) | balanced (1.7x) | performance (2x), AMD FSR 1.0
+    "upscaling": "quality",   # off | quality (1.5x) | balanced (1.7x) | performance (2x), AMD FSR 1.0
     "sharpness": 0.2,         # 0..2 FSR sharpening in stops (0 = sharpest, AMD default 0.2)
+    "dof": 0.45,              # 0..1 depth of field strength
+    "lens": 0.35,             # 0..1 chromatic aberration and film grain
 }
 RANGES = {
     "fish": (5, 200), "fish_scale": (0.6, 3.0), "jellyfish": (0, 8),
     "bloom": (0.0, 1.0), "vignette": (0.0, 1.0), "sharpness": (0.0, 2.0),
+    "dof": (0.0, 1.0), "lens": (0.0, 1.0),
 }
 CHOICES = {
     "water": list(WATER), "quality": list(QUALITY),
