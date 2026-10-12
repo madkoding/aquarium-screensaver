@@ -1,0 +1,11 @@
+build/
+dist/
+*.spec
+*.scr
+__pycache__/
+shot.png
+crop.png
+small.png
+lights.png
+light_*.png
+capture.png
