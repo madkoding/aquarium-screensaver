@@ -67,6 +67,8 @@ def run_session(cfg, preview_hwnd=None, seconds=None, shot=None, warmup=0.0):
     try:
         renderer = make_renderer(pygame, cfg, mons, (vx, vy), (vw, vh))
     except Exception as exc:
+        if seconds is not None:
+            raise                      # dev run: show the real traceback
         winapi.message_box("The Aquarium screensaver needs OpenGL 3.3 or newer.\n\n"
                            f"{exc}", "Aquarium Screensaver")
         pygame.display.quit()

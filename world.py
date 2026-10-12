@@ -9,6 +9,7 @@ CAM_Y = 0.0
 FOV = np.radians(45.0)
 LOOK_AT = np.array([0.0, -0.5, -10.0])
 FLOOR_Y = -2.3
+SURFACE_Y = 3.0                     # mean height of the water surface
 Z_NEAR_LIMIT, Z_FAR_LIMIT = 2.5, -15.0   # swimmable depth range
 _TAN = np.tan(FOV / 2)
 _SLOPE = (LOOK_AT[1] - CAM_Y) / (LOOK_AT[2] - CAM_Z)   # screen-centre y per unit z

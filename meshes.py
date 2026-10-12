@@ -161,7 +161,12 @@ def build_kelp_instances(rng, count=55):
 
 # ------------------------------------------------------------- seabed, rocks
 def build_seabed(rng, rock_count=22, coral_count=16):
-    """Sand dunes plus rocks as one static mesh: pos(3) normal(3) color(3)."""
+    """Sand dunes, rocks and coral as one static mesh: pos(3) normal(3) color(3).
+
+    Also returns the rocks/corals as ray-tracing occluders (ellipsoids):
+    centre3 forward3 radii3 kind opacity colour3, shape (n, 14).
+    """
+    occ = []
     nz, nx = 90, 200
     z = np.linspace(-34.0, 6.0, nz)[:, None]
     x = np.linspace(-34.0, 34.0, nx)[None, :]
@@ -192,6 +197,8 @@ def build_seabed(rng, rock_count=22, coral_count=16):
         tone = np.array([0.34, 0.31, 0.29]) * rng.uniform(0.7, 1.2)
         shade = (0.75 + 0.5 * noise3(d * 6.0, seed=k + 3))[..., None]
         verts.append(np.concatenate([c, _normals(c), tone * shade], -1).reshape(-1, 9))
+        occ.append([x0, world.floor_y(x0, z0) + 0.15 * scale, z0, 1, 0, 0,
+                    1.05 * scale, 0.62 * scale, 0.90 * scale, 1, 1.0, *(tone * 1.3)])
         idx.append(_grid_indices(33, 21, base))
         base += 33 * 21
     coral = np.array([(0.95, 0.35, 0.50), (1.0, 0.55, 0.15), (0.62, 0.30, 0.88),
@@ -212,10 +219,13 @@ def build_seabed(rng, rock_count=22, coral_count=16):
         tone = coral[rng.integers(0, len(coral))]
         polyp = (0.7 + 0.5 * noise3(d * 16.0, seed=k + 5))[..., None]
         verts.append(np.concatenate([c, _normals(c), tone * polyp], -1).reshape(-1, 9))
+        occ.append([x0, world.floor_y(x0, z0) + 0.12 * scale, z0, 1, 0, 0,
+                    1.0 * scale, 0.7 * scale, 1.0 * scale, 1, 1.0, *tone])
         idx.append(_grid_indices(41, 27, base))
         base += 41 * 27
     return (np.concatenate(verts).astype(np.float32),
-            np.concatenate(idx).reshape(-1).astype(np.uint32))
+            np.concatenate(idx).reshape(-1).astype(np.uint32),
+            np.array(occ, np.float32))
 
 
 # ---------------------------------------------------------------- jellyfish

@@ -133,7 +133,8 @@ class Sim:
     def _limits(self, z):
         hw, hh, cy = world.view_extent(z, self.aspect)
         floor = world.floor_y(0.0, z)
-        return hw * 0.97, max(floor + 0.35, cy - hh * 0.9), cy + hh * 0.9
+        return (hw * 0.97, max(floor + 0.35, cy - hh * 0.9),
+                min(cy + hh * 0.9, world.SURFACE_Y - 0.5))
 
     def _clamp_to_bounds(self, p):
         xm, ylo, yhi = self._limits(p[2])
@@ -254,6 +255,30 @@ class Sim:
         out[:, 3:6] = self.fwd
         out[:, 14] = self.phase
         out[:, 15] = self.bend
+        return out
+
+    def occluders(self):
+        """Dynamic ray-tracing occluders as ellipsoids, (N+J, 14) float32:
+        centre3 forward3 radii3 kind opacity colour3  (kind 0 fish, 2 jelly)."""
+        out = np.zeros((self.N + self.J, 14), np.float32)
+        ln = self.len
+        out[:self.N, 0:3] = self.pos + self.fwd * (0.04 * ln)[:, None]
+        out[:self.N, 3:6] = self.fwd
+        out[:self.N, 6] = 0.42 * ln
+        out[:self.N, 7] = 0.16 * ln * self.static[:, 7]
+        out[:self.N, 8] = 0.09 * ln * self.static[:, 8]
+        out[:self.N, 10] = 1.0
+        out[:self.N, 11:14] = (self.static[:, 18:21] + self.static[:, 21:24]) * 0.5
+        if self.J:
+            j = slice(self.N, self.N + self.J)
+            out[j, 0:3] = self.jpos + np.array([0.0, 0.1, 0.0]) * self.jsize[:, None]
+            out[j, 3] = 1.0
+            out[j, 6] = 0.9 * self.jsize
+            out[j, 7] = 0.52 * self.jsize
+            out[j, 8] = 0.9 * self.jsize
+            out[j, 9] = 2
+            out[j, 10] = 0.35
+            out[j, 11:14] = self.jcol
         return out
 
     def jelly_instances(self):

@@ -1,7 +1,38 @@
 """GLSL 3.30 sources for every pass of the aquarium renderer."""
 
+
+# Water-surface waves and sea-floor height, shared by the caustic vertex shader
+# and every fragment shader (so CPU and GPU agree on the same ocean).
+WAVES = """
+uniform float u_surf;
+uniform float u_floor;
+
+float floor_h(vec2 p) {
+    return u_floor + 0.16 * sin(p.x * 0.33 + p.y * 0.21)
+         + 0.10 * sin(p.x * 0.87 - p.y * 0.53 + 1.3)
+         + 0.06 * sin(p.y * 0.9 + p.x * 0.2);
+}
+
+float surf_h(vec2 p, float t) {
+    float h = 0.060 * sin(dot(p, vec2( 0.9,  0.4)) * 1.7 - t * 1.1)
+            + 0.045 * sin(dot(p, vec2(-0.5,  0.8)) * 2.3 - t * 1.5 + 1.3)
+            + 0.030 * sin(dot(p, vec2( 0.2, -1.0)) * 3.1 - t * 1.9 + 2.1)
+            + 0.018 * sin(dot(p, vec2( 1.0,  0.1)) * 5.3 - t * 2.6 + 0.7)
+            + 0.026 * sin(dot(p, vec2(-0.7, -0.6)) * 2.9 - t * 1.7 + 0.4)
+            + 0.014 * sin(dot(p, vec2( 0.3,  0.95)) * 4.1 - t * 2.2 + 2.6);
+    return u_surf + h;
+}
+
+vec3 surf_normal(vec2 p, float t) {
+    const float e = 0.02;
+    float dx = surf_h(p + vec2(e, 0.0), t) - surf_h(p - vec2(e, 0.0), t);
+    float dz = surf_h(p + vec2(0.0, e), t) - surf_h(p - vec2(0.0, e), t);
+    return normalize(vec3(-dx, 2.0 * e, -dz));
+}
+"""
+
 # Shared by the fragment shaders: water colour, fog, caustics, hashing.
-COMMON = """
+COMMON = WAVES + """
 uniform float u_time;
 uniform vec2 u_res;
 uniform vec3 u_camPos;
@@ -54,6 +85,113 @@ vec3 ambient(vec3 N) {
 }
 """
 
+# Ray-tracing helpers (appended to COMMON): ellipsoid occluders, sun-space grid
+# shadows and the refraction-based caustic map.
+RT_COMMON = """
+uniform float u_rt;                 // 1 = ray-traced effects on
+uniform sampler2D u_grid;           // occluder ids per sun-space cell (R32F)
+uniform sampler2D u_occ;            // occluder ellipsoids (RGBA32F, 4 rows)
+uniform sampler2D u_caus;           // caustic flux on the sea floor plane (R16F)
+uniform sampler2D u_mirror;         // traced underside of the water surface
+uniform vec2 u_gridOrigin;
+uniform float u_cell;
+uniform ivec2 u_gridDim;
+uniform int u_nocc;
+uniform int u_nstatic;
+uniform vec2 u_mapOrigin;
+uniform vec2 u_mapSize;
+uniform vec3 u_refr;                // refracted sun direction (unit, y < 0)
+uniform float u_cgain;
+const int GRID_K = 12;
+
+struct Occ {
+    vec3 c; vec3 X; vec3 Y; vec3 Z; vec3 r; float opac; float soft; vec3 col;
+};
+
+Occ load_occ(int id) {
+    vec4 a = texelFetch(u_occ, ivec2(id, 0), 0);
+    vec4 b = texelFetch(u_occ, ivec2(id, 1), 0);
+    vec4 c = texelFetch(u_occ, ivec2(id, 2), 0);
+    vec4 d = texelFetch(u_occ, ivec2(id, 3), 0);
+    Occ o;
+    o.c = a.xyz;
+    o.X = normalize(b.xyz);
+    vec3 Z = normalize(cross(o.X, vec3(0.0, 1.0, 0.0)) + vec3(1e-4, 0.0, 0.0));
+    o.Z = Z;
+    o.Y = cross(Z, o.X);
+    o.r = vec3(a.w, b.w, c.x);
+    o.soft = (c.y < 0.5) ? 5.0 : ((c.y < 1.5) ? 3.0 : 4.0);
+    o.opac = c.z;
+    o.col = d.rgb;
+    return o;
+}
+
+// Soft shadow of one ellipsoid on a ray (after the classic sphere soft shadow,
+// evaluated in the ellipsoid's unit-sphere space). 1 = lit, 0 = dark.
+float occ_soft(Occ o, vec3 ro, vec3 rd) {
+    vec3 d = ro - o.c;
+    vec3 lo = vec3(dot(d, o.X), dot(d, o.Y), dot(d, o.Z)) / o.r;
+    vec3 ld = vec3(dot(rd, o.X), dot(rd, o.Y), dot(rd, o.Z)) / o.r;
+    ld = normalize(ld);
+    float b = dot(lo, ld);
+    float c = dot(lo, lo) - 1.0;
+    float h = b * b - c;
+    float dd = sqrt(max(0.0, 1.0 - h)) - 1.0;
+    float t = -b - sqrt(max(h, 0.0));
+    float v = (t < 0.0) ? 1.0 : smoothstep(0.0, 1.0, 2.5 * o.soft * dd / t);
+    return mix(1.0, v, o.opac);
+}
+
+// Shadow ray from p toward the light. Only the occluders registered in the
+// ray's sun-space cell are tested (the grid is the acceleration structure).
+float rt_shadow(vec3 p, vec3 L, int skip) {
+    if (u_rt < 0.5) return 1.0;
+    vec2 q = p.xz - L.xz * (p.y / L.y);
+    ivec2 c = ivec2(floor((q - u_gridOrigin) / u_cell));
+    if (c.x < 0 || c.y < 0 || c.x >= u_gridDim.x || c.y >= u_gridDim.y) return 1.0;
+    float vis = 1.0;
+    for (int k = 0; k < GRID_K; k++) {
+        float idf = texelFetch(u_grid, ivec2(c.x * GRID_K + k, c.y), 0).r;
+        if (idf < 0.0) break;
+        int id = int(idf + 0.5);
+        if (id == skip) continue;
+        vis *= occ_soft(load_occ(id), p, L);
+    }
+    return vis;
+}
+
+// Light flux at p from the caustic map: follow the refracted sun ray from p
+// down to the floor plane and read what landed there. About 1 on average.
+float rt_flux(vec3 p, float lod) {
+    float t = (u_floor - p.y) / u_refr.y;
+    vec2 q = p.xz + u_refr.xz * t;
+    vec2 uv = (q - u_mapOrigin) / u_mapSize;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    return textureLod(u_caus, uv, lod).r * u_cgain;
+}
+
+// Sunlight fades with depth below the surface (ray-traced mode only).
+float sun_atten(vec3 p) {
+    return mix(1.0, exp(-max(u_surf - p.y, 0.0) * 0.08), u_rt);
+}
+"""
+
+COMMON = COMMON + RT_COMMON
+
+# Screen-space refraction: transparent objects sample a copy of the opaque
+# scene through an offset, with a little chromatic dispersion.
+REFR_COMMON = """
+uniform sampler2D u_refrTex;
+
+vec3 refracted_bg(vec2 uv, vec2 off, float disp) {
+    vec2 lo = vec2(0.002), hi = vec2(0.998);
+    return vec3(texture(u_refrTex, clamp(uv + off * (1.0 - disp), lo, hi)).r,
+                texture(u_refrTex, clamp(uv + off, lo, hi)).g,
+                texture(u_refrTex, clamp(uv + off * (1.0 + disp), lo, hi)).b);
+}
+"""
+COMMON = COMMON + REFR_COMMON
+
 # ------------------------------------------------------------- background
 FULLSCREEN_VS = """
 #version 330
@@ -70,9 +208,9 @@ in vec2 uv;
 out vec4 o_col;
 void main() {
     vec3 c = bg_color(uv);
-    // faint luminous haze near the surface
-    c += u_sunCol * 0.06 * pow(clamp(uv.y, 0.0, 1.0), 4.0);
-    o_col = vec4(c, 1.0);
+    c += u_sunCol * 0.06 * pow(clamp(uv.y, 0.0, 1.0), 4.0);   // haze near the surface
+    if (u_rt > 0.5) c = texture(u_mirror, uv).rgb;            // ray-traced water + mirror
+    o_col = vec4(c, 0.0);                                     // alpha = distance (0 = far)
 }
 """
 
@@ -103,12 +241,15 @@ out vec4 o_col;
 void main() {
     vec3 N = normalize(v_nrm);
     vec3 L = normalize(u_sunDir);
+    float sh = rt_shadow(v_world + N * 0.03, L, -1);
+    float att = sun_atten(v_world);
     float diff = max(dot(N, L), 0.0);
-    float c = caustics(v_world.xz * 0.16, u_time * 0.55);
+    float c = (u_rt > 0.5) ? rt_flux(v_world, 0.0) * 0.5
+                           : caustics(v_world.xz * 0.16, u_time * 0.55);
     float shallow = smoothstep(-6.0, 0.0, v_world.z);   // brighter nearer the glass
-    vec3 col = v_col * (ambient(N) + u_sunCol * diff * 0.75)
-             + v_col * u_sunCol * c * (0.55 + 0.9 * shallow);
-    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), 1.0);
+    vec3 col = v_col * (ambient(N) + u_sunCol * diff * 0.75 * sh * att)
+             + v_col * u_sunCol * c * sh * att * (0.55 + 0.9 * shallow);
+    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
 }
 """
 
@@ -138,6 +279,7 @@ out vec3 v_nloc;
 flat out float v_part;
 flat out float v_pattern;
 flat out float v_sy;
+flat out int v_id;
 flat out vec3 v_c1;
 flat out vec3 v_c2;
 flat out vec3 v_c3;
@@ -183,6 +325,7 @@ void main() {
     v_part = in_part;
     v_pattern = i_anim.z;
     v_sy = i_size.y;
+    v_id = gl_InstanceID;
     v_c1 = i_c1;
     v_c2 = i_c2;
     v_c3 = i_c3;
@@ -199,6 +342,7 @@ in vec3 v_nloc;
 flat in float v_part;
 flat in float v_pattern;
 flat in float v_sy;
+flat in int v_id;
 flat in vec3 v_c1;
 flat in vec3 v_c2;
 flat in vec3 v_c3;
@@ -283,18 +427,21 @@ void main() {
     float ndl = dot(N, L);
     float diff = max(ndl, 0.0);
     float wrap = max((ndl + 0.6) / 1.6, 0.0);
-    vec3 lit = ambient(N) + u_sunCol * (0.55 * diff + 0.35 * wrap);
+    float sh = rt_shadow(v_world + N * 0.01, L, u_nstatic + v_id);
+    float att = sun_atten(v_world);
+    vec3 lit = ambient(N) + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
     vec3 col = albedo * lit;
-    col += albedo * u_sunCol * caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55)
-         * 0.35 * max(N.y, 0.0);
+    float cz = (u_rt > 0.5) ? rt_flux(v_world, 0.0) * 0.5
+                            : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
+    col += albedo * u_sunCol * att * sh * cz * 0.35 * max(N.y, 0.0);
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 70.0) * (part == 0 ? 0.55 : 0.12);
+    float spec = pow(max(dot(N, H), 0.0), 70.0) * (part == 0 ? 0.55 : 0.12) * sh;
     col += spec * u_sunCol;
     float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
     col += rim * vec3(0.10, 0.26, 0.36) * (0.4 + 0.6 * u_day);
     col += albedo * emis * 0.9;                       // neon stripes glow (feeds the bloom)
 
-    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), 1.0);
+    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
 }
 """
 
@@ -347,10 +494,14 @@ void main() {
     vec3 L = normalize(u_sunDir);
     vec3 albedo = v_col * mix(0.62, 1.30, v_u) * (0.88 + 0.12 * smoothstep(0.0, 0.25, abs(v_side)));
     float trans = pow(max(dot(-N, L), 0.0), 1.5) * 0.5;      // light shining through the blade
-    vec3 lit = ambient(N) + u_sunCol * (0.45 * abs(dot(N, L)) + trans);
+    float sh = rt_shadow(v_world, L, -1);
+    float att = sun_atten(v_world);
+    vec3 lit = ambient(N) + u_sunCol * att * sh * (0.45 * abs(dot(N, L)) + trans);
     vec3 col = albedo * lit;
-    col += albedo * u_sunCol * caustics(v_world.xz * 0.16 + v_world.y * 0.1, u_time * 0.55) * 0.25;
-    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), 1.0);
+    float cz = (u_rt > 0.5) ? rt_flux(v_world, 0.0) * 0.5
+                            : caustics(v_world.xz * 0.16 + v_world.y * 0.1, u_time * 0.55);
+    col += albedo * u_sunCol * att * sh * cz * 0.25;
+    o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
 }
 """
 
@@ -384,6 +535,8 @@ void main() {
 """
 
 JELLY_BELL_FS = "#version 330\n" + COMMON + """
+uniform mat4 u_view;
+uniform mat4 u_proj;
 in vec3 v_world;
 in vec3 v_nrm;
 in vec3 v_col;
@@ -392,12 +545,25 @@ out vec4 o_col;
 void main() {
     vec3 N = normalize(v_nrm);
     vec3 V = normalize(u_camPos - v_world);
-    float fres = pow(1.0 - abs(dot(N, V)), 2.0);
+    float ndv = abs(dot(N, V));
+    float fres = pow(1.0 - ndv, 2.0);
+    vec2 uv = gl_FragCoord.xy / u_res;
+
+    // Lens: bend the view ray by the surface normal; pixels-per-world-unit
+    // at this depth turns that into a screen offset. Stronger toward the rim.
+    vec3 nv = mat3(u_view) * N;
+    float dist = length(u_camPos - v_world);
+    float ppu = u_proj[1][1] * u_res.y * 0.5 / dist;
+    vec2 off = -nv.xy * ppu * 0.50 * (0.35 + 0.65 * fres) / u_res;
+    vec3 seen = refracted_bg(uv, off, 0.10);
+
     float veins = 0.5 + 0.5 * sin(atan(v_local.z, v_local.x) * 14.0);
-    vec3 glow = v_col * (0.35 + 0.55 * fres + 0.25 * veins * (1.0 - v_local.y));
-    vec3 col = apply_fog(glow * (0.55 + 0.45 * u_day) , v_world, gl_FragCoord.xy / u_res);
-    float a = 0.20 + 0.55 * fres + 0.12 * veins;
-    o_col = vec4(col * a, a);       // premultiplied alpha
+    vec3 glow = v_col * (0.30 + 0.55 * fres + 0.22 * veins * (1.0 - v_local.y));
+    glow = apply_fog(glow * (0.55 + 0.45 * u_day), v_world, uv);
+    vec3 tint = mix(vec3(1.0), v_col * 1.25, 0.40);
+    vec3 col = seen * tint * 0.95 + glow * (0.30 + 0.5 * fres);
+    float a = 0.50 + 0.40 * fres;
+    o_col = vec4(col * a, a);
 }
 """
 
@@ -456,6 +622,8 @@ uniform float u_resy;
 uniform float u_floor;
 out float v_alpha;
 out vec3 v_world;
+out vec2 v_center;
+out float v_psize;
 float h(float x) { return fract(sin(x * 127.1 + 311.7) * 43758.5453); }
 void main() {
     const int SRC = 14;
@@ -477,23 +645,34 @@ void main() {
     gl_PointSize = max(r * u_proj[1][1] * u_resy / clip.w, 2.0);
     v_alpha = smoothstep(0.0, 0.04, k) * (1.0 - smoothstep(0.92, 1.0, k));
     v_world = world;
+    v_center = clip.xy / clip.w * 0.5 + 0.5;
+    v_psize = gl_PointSize;
 }
 """
 
 BUBBLE_FS = "#version 330\n" + COMMON + """
 in float v_alpha;
 in vec3 v_world;
+in vec2 v_center;
+in float v_psize;
 out vec4 o_col;
 void main() {
     vec2 c = gl_PointCoord * 2.0 - 1.0;
     float d = length(c);
     if (d > 1.0) discard;
+    float R = v_psize * 0.5;
+    vec2 off_px = vec2(c.x, -c.y) * R;                 // this pixel relative to the bubble centre
+    // an air bubble in water is a diverging lens: the image inside is inverted
+    // and wide-angle, so look up the background mirrored about the centre
+    vec2 look = v_center - off_px * 1.6 / u_res;
+    vec3 bg = refracted_bg(look, -off_px * 0.25 / u_res, 0.18);
     float rim = smoothstep(0.62, 0.95, d) * (1.0 - smoothstep(0.95, 1.0, d));
     float hl = smoothstep(0.38, 0.0, length(c - vec2(-0.35, 0.40)));
-    float a = (rim * 0.75 + hl * 0.85 + 0.05) * v_alpha;
-    vec3 col = vec3(0.75, 0.93, 1.0) * (rim + hl + 0.1) * (0.4 + 0.6 * max(u_day, 0.3));
+    vec3 col = bg * (0.80 + 0.15 * rim) + vec3(0.75, 0.93, 1.0) * (rim * 0.55 + hl * 0.9)
+             * (0.4 + 0.6 * max(u_day, 0.3));
+    float a = v_alpha * smoothstep(1.0, 0.90, d);
     float f = 1.0 - exp(-length(u_camPos - v_world) * u_fog);
-    o_col = vec4(col * a * (1.0 - f), a * (1.0 - f));
+    o_col = vec4(col * a, a);
 }
 """
 
@@ -613,4 +792,176 @@ void main() {
     c += (hash12(gl_FragCoord.xy + fract(u_time) * 91.0) - 0.5) / 255.0;   // de-band gradients
     o_col = vec4(c, 1.0);
 }
+"""
+
+
+# ----------------------------------------------------- ray-traced passes
+# Forward light tracing: every vertex of the water-surface grid refracts a sun
+# ray (Snell's law) down to the floor plane; the ratio between the area the
+# flat surface would cover and the area it actually covers is the focusing.
+CAUSTIC_VS = "#version 330\n" + WAVES + """
+uniform float u_time;
+uniform vec3 u_sunDir;
+uniform vec2 u_mapOrigin;
+uniform vec2 u_mapSize;
+in vec2 in_xz;
+out float v_flux;
+
+// Where the sun ray that crosses the surface at xz lands on the floor plane.
+vec2 land(vec2 xz, vec3 I) {
+    vec3 s = vec3(xz.x, surf_h(xz, u_time), xz.y);
+    vec3 r = refract(I, surf_normal(xz, u_time), 1.0 / 1.333);
+    return (s + r * ((u_floor - s.y) / r.y)).xz;
+}
+
+void main() {
+    vec3 I = -normalize(u_sunDir);
+    const float e = 0.05;
+    vec2 p = land(in_xz, I);
+    vec2 jx = (land(in_xz + vec2(e, 0.0), I) - p) / e;
+    vec2 jz = (land(in_xz + vec2(0.0, e), I) - p) / e;
+    // Energy per floor area = 1 / |Jacobian| of the surface -> floor mapping;
+    // a flat surface gives exactly 1. It is evaluated per vertex (no screen
+    // derivatives) so the caustic map stays smooth.
+    float det = abs(jx.x * jz.y - jx.y * jz.x);
+    v_flux = min(1.0 / max(det, 0.05), 10.0);
+    vec2 uv = (p - u_mapOrigin) / u_mapSize;
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+CAUSTIC_FS = """
+#version 330
+in float v_flux;
+out vec4 o_col;
+void main() { o_col = vec4(v_flux, 0.0, 0.0, 1.0); }
+"""
+
+# The underside of the water, seen from below, is a mirror (total internal
+# reflection). Trace the reflected ray against the sea floor and the ellipsoids.
+MIRROR_FS = "#version 330\n" + COMMON + """
+uniform mat4 u_invVP;
+in vec2 uv;
+out vec4 o_col;
+
+float ell_hit(Occ o, vec3 ro, vec3 rd, out vec3 n) {
+    vec3 d = ro - o.c;
+    vec3 lo = vec3(dot(d, o.X), dot(d, o.Y), dot(d, o.Z)) / o.r;
+    vec3 ld = vec3(dot(rd, o.X), dot(rd, o.Y), dot(rd, o.Z)) / o.r;
+    float a = dot(ld, ld);
+    float b = dot(lo, ld);
+    float c = dot(lo, lo) - 1.0;
+    float disc = b * b - a * c;
+    n = vec3(0.0, 1.0, 0.0);
+    if (disc < 0.0) return -1.0;
+    float t = (-b - sqrt(disc)) / a;
+    if (t <= 0.0) return -1.0;
+    vec3 pl = (lo + ld * t) / o.r;
+    n = normalize(o.X * pl.x + o.Y * pl.y + o.Z * pl.z);
+    return t;
+}
+
+void main() {
+    vec3 ro = u_camPos;
+    vec4 w = u_invVP * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    vec3 rd = normalize(w.xyz / w.w - ro);
+    vec3 bgc = bg_color(uv) + u_sunCol * 0.06 * pow(clamp(uv.y, 0.0, 1.0), 4.0);
+    if (rd.y < 0.004) { o_col = vec4(bgc, 1.0); return; }
+
+    float t = (u_surf - ro.y) / rd.y;
+    vec3 hit = ro + rd * t;
+    t += (surf_h(hit.xz, u_time) - hit.y) / rd.y;
+    hit = ro + rd * t;
+    vec3 n = -surf_normal(hit.xz, u_time);
+    vec3 R = reflect(rd, n);
+    float window = smoothstep(0.58, 0.72, abs(dot(rd, n)));   // Snell's window: sky shows through
+
+    float tf = -1.0;
+    if (R.y < -0.001) {
+        float tt = (u_floor - hit.y) / R.y;
+        for (int i = 0; i < 4; i++) {
+            vec3 p = hit + R * tt;
+            tt += (floor_h(p.xz) - p.y) / R.y;
+        }
+        if (tt > 0.0 && tt < 70.0) tf = tt;
+    }
+    float te = 1e9;
+    int hid = -1;
+    vec3 hn = vec3(0.0, 1.0, 0.0);
+    for (int i = 0; i < u_nocc; i++) {
+        vec3 nn;
+        float th = ell_hit(load_occ(i), hit, R, nn);
+        if (th > 0.0 && th < te) { te = th; hid = i; hn = nn; }
+    }
+
+    vec3 L = normalize(u_sunDir);
+    vec3 col = bgc;
+    float tt = 70.0;
+    if (hid >= 0 && (tf < 0.0 || te < tf)) {
+        vec3 hp = hit + R * te;
+        col = load_occ(hid).col * (ambient(hn) + u_sunCol * max(dot(hn, L), 0.0) * 0.8 * sun_atten(hp));
+        tt = te;
+    } else if (tf > 0.0) {
+        vec3 hp = hit + R * tf;
+        float flux = rt_flux(hp, 1.0) * 0.5;
+        col = vec3(0.80, 0.72, 0.52) * (ambient(vec3(0.0, 1.0, 0.0))
+            + u_sunCol * sun_atten(hp) * (0.7 + 0.9 * flux));
+        tt = tf;
+    }
+    float total = t + tt;
+    col = mix(col * 1.25 * exp(-vec3(0.10, 0.04, 0.015) * total * 0.30), bgc,
+              1.0 - exp(-total * u_fog * 0.8));         // the surface is lit from above
+    vec3 Rr = refract(rd, n, 1.333);                         // water -> air, bent away from the normal
+    vec3 Ls = normalize(u_sunDir);
+    float sd = max(dot(normalize(Rr), Ls), 0.0);
+    vec3 sky = mix(vec3(0.78, 0.89, 1.0), vec3(0.16, 0.42, 0.92), pow(clamp(Rr.y, 0.0, 1.0), 0.55));
+    sky = sky * (0.12 + 0.88 * u_day) + u_sunCol * (pow(sd, 600.0) * 12.0 + pow(sd, 14.0) * 0.5);
+    col = mix(col, sky, window * 0.9);
+    o_col = vec4(col, 1.0);
+}
+"""
+
+# Volumetric light: march each camera ray through the water; at every step the
+# light that arrives is the caustic flux (sun rays focused by the surface) times
+# the shadow rays against the ellipsoids, attenuated with depth.
+VOL_FS = "#version 330\n" + COMMON + """
+uniform sampler2D u_scene;      // alpha = distance to the nearest surface (0 = none)
+uniform mat4 u_invVP;
+uniform float u_scale;          // scene pixels per volume pixel
+uniform int u_steps;
+uniform float u_vol;
+in vec2 uv;
+out vec4 o_col;
+void main() {
+    vec3 ro = u_camPos;
+    vec4 w = u_invVP * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize(w.xyz / w.w - ro);
+    float dist = texelFetch(u_scene, ivec2(gl_FragCoord.xy * u_scale), 0).a;
+    float maxd = dist > 0.0 ? dist : 48.0;
+    if (dir.y > 0.0001) maxd = min(maxd, (u_surf - ro.y) / dir.y);
+    maxd = min(maxd, 48.0);
+
+    vec3 L = normalize(u_sunDir);
+    float jit = hash12(gl_FragCoord.xy + fract(u_time) * 37.0);
+    float dt = maxd / float(u_steps);
+    float phase = 0.30 + 0.70 * pow(max(dot(dir, L), 0.0), 3.0);
+    vec3 acc = vec3(0.0);
+    float T = 1.0;
+    for (int i = 0; i < u_steps; i++) {
+        vec3 p = ro + dir * ((float(i) + jit) * dt);
+        float lit = rt_flux(p, 3.0) * rt_shadow(p, L, -1);
+        float atten = exp(-max(u_surf - p.y, 0.0) * 0.11);
+        acc += T * lit * atten * dt * 0.05;
+        T *= exp(-0.05 * dt);
+    }
+    o_col = vec4(u_sunCol * acc * phase * u_vol, 1.0);
+}
+"""
+
+BLIT_FS = """
+#version 330
+uniform sampler2D u_tex;
+in vec2 uv;
+out vec4 o_col;
+void main() { o_col = vec4(texture(u_tex, uv).rgb, 0.0); }
 """

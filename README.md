@@ -1,14 +1,18 @@
 # Aquarium Screensaver
 
-A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. Every fish is generated from code (no model files), schools swim as one continuous world across all your monitors, and the lighting follows your clock.
+A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. Every fish is generated from code (no model files), schools swim as one continuous world across all your monitors, the lighting follows your clock, and shadows, caustics, light shafts, reflections and refractions are ray traced.
 
 ![Three monitors](docs/screenshot.png)
 
 *Real capture from a 3-monitor setup (a central ultrawide plus two portrait displays).*
 
-| Fish up close | At night |
+| Traced caustics and shadows | The water surface, seen from below |
 |---|---|
-| ![Detail](docs/detail.png) | ![Night](docs/night.png) |
+| ![Detail](docs/detail.png) | ![Mirror](docs/mirror.png) |
+
+![Night](docs/night.png)
+
+*Night: moonlit water, and the neon tetras glow.*
 
 ## Features
 
@@ -16,7 +20,13 @@ A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. 
 - **Six species:** neon tetras, clownfish, blue tangs, angelfish, tuna, and an occasional shark patrolling the far water.
 - **Schooling behavior:** every school follows a roaming waypoint and its members apply boid rules (cohesion, alignment, separation) with soft tank bounds, so groups turn and cross the screen together.
 - **One continuous world:** a single perspective camera covers the whole virtual desktop, so fish swim from one monitor to the next. Mixed sizes and orientations work.
-- **Underwater look:** animated caustics on the sand, god rays, depth fog that absorbs red first, bubble streams, drifting marine snow, swaying seaweed, rocks, coral heads, and translucent pulsing jellyfish.
+- **Ray-traced lighting (hybrid):** the scene is rasterized, and these effects are traced per pixel in shaders (no RT cores needed, so it runs on any OpenGL 3.3 GPU):
+  - **Soft shadows** from fish, jellyfish, rocks and coral, using shadow rays against ellipsoid occluders and a sun-space grid as the acceleration structure.
+  - **Physical caustics:** sun rays are refracted (Snell's law) through an animated water surface and focused onto the sand; the brightness is the energy density of those rays.
+  - **Volumetric light shafts:** each camera ray is marched through the water, picking up the focused light and the shadows of fish and rocks.
+  - **A real water surface seen from below:** total internal reflection mirrors the sea floor, rocks and fish on the underside of the waves, with Snell's window showing the sky when you look steeply up.
+  - **Refraction:** jellyfish bend and tint what is behind them like a gel lens, and every bubble is a tiny diverging lens with chromatic dispersion.
+- **Underwater look:** depth fog that absorbs red first, bubble streams, drifting marine snow, swaying seaweed, rocks, coral heads, and translucent pulsing jellyfish.
 - **Day, dusk and night:** lighting follows your clock (or pick one). At night the neon tetras glow.
 - **Bloom, vignette, MSAA and de-banding dither** for a clean image, with three quality levels.
 - **Settings dialog** and a live **preview** in the Windows screensaver picker.
@@ -47,6 +57,7 @@ Open **Settings...** in the screensaver picker. Values are stored in `%APPDATA%\
 | `bubbles` | Bubble streams. |
 | `bloom` / `vignette` | Glow strength and corner darkening. |
 | `camera_drift` | Slow, subtle camera sway. |
+| `raytracing` | Ray-traced shadows, caustics, light shafts, water mirror and refraction. Turn it off for the cheaper procedural look. |
 
 ## Build from source
 
@@ -82,8 +93,9 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 | File | Role |
 |---|---|
 | `aquarium_saver.py` | Entry point: argument parsing (`/s`, `/c`, `/p`), main loop, frame pacing, hot-plug and battery handling. |
-| `renderer.py` | OpenGL pipeline: scene pass (MSAA), bloom chain, final composite. |
-| `shaders.py` | All GLSL: fish animation and skin patterns, caustics, fog, seaweed, jellyfish, bubbles, god rays. |
+| `renderer.py` | OpenGL pipeline: caustics, mirror, scene (MSAA), refraction copy, volume, bloom, final composite. |
+| `rt.py` | Ray-tracing data: ellipsoid occluder texture, sun-space acceleration grid, caustic map layout, surface grid. |
+| `shaders.py` | All GLSL: fish animation and skin patterns, shadow rays, caustic tracing, mirror and volume passes, refraction, fog, seaweed, jellyfish, bubbles. |
 | `meshes.py` | Procedural geometry: fish, seaweed ribbons, rocks, coral, seabed, jellyfish. |
 | `sim.py` | Species table, boid schooling, shark patrol and jellyfish motion. |
 | `world.py` | Camera, projection and the seabed height function shared by the CPU and the shaders. |
@@ -94,7 +106,10 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 - Fish are drawn with one instanced draw call. The vertex shader scales fins about their base, flaps the pectorals, and bends the spine with a head-to-tail traveling wave plus a turn-dependent curve.
 - Skin patterns (neon stripe, clownfish bands, tang palette, angelfish bars, shark counter-shading) are evaluated per pixel from the mesh's `(length, around)` coordinates, and the eyes are drawn procedurally.
 - The scene renders into a 16-bit float target, so bloom and fog gradients stay smooth; a tiny dither in the final pass removes banding.
-- The simulation costs about 2 ms per frame for 60 fish; everything else runs on the GPU.
+- **Shadow rays:** occluders live in a float texture. Projecting every point along the light direction onto a plane makes all points of one sun ray land in the same grid cell, so each shadow ray only tests the few ellipsoids of its own cell.
+- **Caustics:** a dense grid on the water surface refracts one sun ray per vertex down to the sea floor. The vertex shader computes the Jacobian of that surface-to-floor mapping; its inverse is the energy per area, accumulated additively into a texture that the floor, seaweed, fish and light shafts all sample.
+- **Distance for free:** the scene's alpha channel stores the distance to the camera, which is all the volumetric pass needs, so there is no extra depth pass.
+- The simulation costs about 2 ms per frame for 60 fish; everything else runs on the GPU. On an RTX 3060 across three monitors it renders about 280 FPS without ray tracing and about 120 FPS with it (medium quality), against a 75 Hz cap.
 
 ## Requirements
 

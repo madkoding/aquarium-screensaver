@@ -27,6 +27,7 @@ DEFAULTS = {
     "bloom": 0.35,            # 0..1
     "vignette": 0.30,         # 0..1
     "camera_drift": True,     # slow, subtle camera sway
+    "raytracing": True,       # traced shadows, caustics, light shafts, water mirror
 }
 RANGES = {
     "fish": (5, 200), "fish_scale": (0.6, 3.0), "jellyfish": (0, 8),
