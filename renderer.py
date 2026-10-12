@@ -34,7 +34,19 @@ RT_QUALITY = {   # volume downscale, ray-march steps, mirror downscale
     "medium": dict(vol_div=3, steps=20, mirror_div=2.0),
     "high": dict(vol_div=2, steps=28, mirror_div=1.5),
 }
-U_GRID, U_OCC, U_CAUS, U_MIRROR, U_SCENE, U_REFR = 3, 4, 5, 6, 7, 8   # texture units
+U_GRID, U_OCC, U_CAUS, U_MIRROR, U_SCENE, U_REFR, U_WGRID = 3, 4, 5, 6, 7, 8, 9   # texture units
+
+
+def _halton(i, base):
+    f, r = 1.0, 0.0
+    while i > 0:
+        f /= base
+        r += f * (i % base)
+        i //= base
+    return r
+
+
+JITTER = [(_halton(i + 1, 2) - 0.5, _halton(i + 1, 3) - 0.5) for i in range(16)]   # sub-pixel offsets
 
 
 def _smooth(a, b, x):
@@ -98,6 +110,7 @@ class AquariumRenderer:
             vol=prog(S.FULLSCREEN_VS, S.VOL_FS),
             blit=prog(S.FULLSCREEN_VS, S.BLIT_FS),
             dof=prog(S.FULLSCREEN_VS, S.DOF_FS),
+            taa=prog(S.FULLSCREEN_VS, S.TAA_FS),
         )
 
     def _build_geometry(self, rng):
@@ -150,7 +163,7 @@ class AquariumRenderer:
 
         self.vao_empty = {k: c.vertex_array(p[k], []) for k in
                           ("bg", "rays", "down", "blur", "final", "bubble", "snow",
-                           "mirror", "vol", "blit", "dof")}
+                           "mirror", "vol", "blit", "dof", "taa")}
         quality = self.cfg["quality"]
         self.n_bubbles = BUBBLE_SOURCES * {"low": 14, "medium": 22, "high": 30}[quality]
         self.n_snow = {"low": 250, "medium": 500, "high": 800}[quality]
@@ -181,6 +194,8 @@ class AquariumRenderer:
         self.refr_tex, self.refr_fbo = tex(sw, sh)       # opaque scene, for refraction
         self.post_tex, self.post_fbo = tex(sw, sh)       # tone-mapped frame fed to FSR
         self.dof_tex, self.dof_fbo = tex(sw, sh)         # depth-of-field result
+        self.taa = [tex(sw, sh), tex(sw, sh)]            # ping-pong history for TAA
+        self._taa_i, self._frame_idx, self._prev_vp = 0, 0, None
         self.q = [tex(sw // 4, sh // 4), tex(sw // 4, sh // 4),
                   tex(sw // 16, sh // 16), tex(sw // 16, sh // 16)]
 
@@ -191,6 +206,9 @@ class AquariumRenderer:
         for t in (self.occ_tex, self.grid_tex):
             t.filter = (nearest, nearest)
             t.repeat_x = t.repeat_y = False
+        self.wgrid_tex = c.texture((rt.WGRID_W * rt.WK, rt.WGRID_H), 1, dtype="f4")
+        self.wgrid_tex.filter = (nearest, nearest)
+        self.wgrid_tex.repeat_x = self.wgrid_tex.repeat_y = False
         self.caus_tex = c.texture(rt.MAP_RES, 1, dtype="f2")
         self.caus_tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
         self.caus_tex.repeat_x = self.caus_tex.repeat_y = False
@@ -215,7 +233,7 @@ class AquariumRenderer:
         w_bot = night_bot + (bot - night_bot) * k
         warm = _smooth(0.3, 0.9, day)
         sun = np.array([1.0, 0.75 + 0.25 * warm, 0.55 + 0.45 * warm]) * (0.85 + 0.15 * warm)
-        moon = np.array([0.28, 0.36, 0.60]) * 0.62
+        moon = np.array([0.28, 0.36, 0.60]) * 1.05
         sun_col = moon + (sun - moon) * day
         ang = 0.35 - 0.5 * (1 - day)
         sun_dir = np.array([np.sin(ang), 0.9, 0.3])
@@ -247,7 +265,12 @@ class AquariumRenderer:
 
     def _uniforms(self, t, env, eye, view):
         sw, sh = self.scene_size
-        inv_vp = np.linalg.inv(self.proj @ view)
+        inv_vp = np.linalg.inv(self.proj @ view)        # un-jittered: used for ray reconstruction
+        proj_j = self.proj.copy()
+        if self.cfg["taa"]:                              # sub-pixel jitter for the raster passes
+            jx, jy = JITTER[self._frame_idx % len(JITTER)]
+            proj_j[0, 2] += 2.0 * jx / sw
+            proj_j[1, 2] += 2.0 * jy / sh
         tup = lambda a: tuple(float(v) for v in a)
         for prog in self.p.values():
             s = self._set
@@ -276,18 +299,24 @@ class AquariumRenderer:
             s(prog, "u_mapSize", rt.MAP_SIZE)
             s(prog, "u_refr", tup(self._refr))
             s(prog, "u_cgain", 0.8)
+            s(prog, "u_wgridOrigin", rt.WGRID_ORIGIN)
+            s(prog, "u_wcell", rt.WCELL)
+            s(prog, "u_wgridDim", (rt.WGRID_W, rt.WGRID_H))
+            s(prog, "u_frame", float(self._frame_idx % 4096))
+            s(prog, "u_wgrid", U_WGRID)
             for name, unit in (("u_grid", U_GRID), ("u_occ", U_OCC), ("u_caus", U_CAUS),
                                ("u_mirror", U_MIRROR), ("u_scene", U_SCENE),
                                ("u_refrTex", U_REFR)):
                 s(prog, name, unit)
             self._mat(prog, "u_view", view)
-            self._mat(prog, "u_proj", self.proj)
+            self._mat(prog, "u_proj", proj_j)
             self._mat(prog, "u_invVP", inv_vp)
 
     def _bind_rt(self):
         self.grid_tex.use(U_GRID)
         self.occ_tex.use(U_OCC)
         self.caus_tex.use(U_CAUS)
+        self.wgrid_tex.use(U_WGRID)
 
     def render(self, t, dt, frame):
         ctx = self.ctx
@@ -298,9 +327,10 @@ class AquariumRenderer:
         eye, view = self._camera(t)
 
         if self.rt_on:
-            occ_data, grid_data, n = self.occ.build(sim.occluders(), env["sun_dir"])
+            occ_data, grid_data, wgrid_data, n = self.occ.build(sim.occluders(), env["sun_dir"])
             self.occ_tex.write(occ_data.tobytes())
             self.grid_tex.write(grid_data.tobytes())
+            self.wgrid_tex.write(wgrid_data.tobytes())
             self._rt_n = n
             self._refr = rt.refracted_down(env["sun_dir"])
         self._uniforms(t, env, eye, view)
@@ -357,8 +387,10 @@ class AquariumRenderer:
             self._volume_pass()
 
         src = self.scene_tex
+        if self.cfg["taa"]:
+            src = self._taa_pass(eye, view)
         if self.cfg["dof"] > 0.02:
-            src = self._dof_pass(t)
+            src = self._dof_pass(t, src)
         bloom = float(self.cfg["bloom"])
         if bloom > 0:
             self._blur_chain(src, self.q[0], self.q[1])
@@ -389,6 +421,7 @@ class AquariumRenderer:
             self.fsr.upscale(self.post_tex, (sw, sh), ctx.screen, (vw, vh),
                              sharpness=float(self.cfg["sharpness"]), dither=1.0,
                              grain=lens, time=t)
+        self._frame_idx += 1
 
     # --------------------------------------------------------- ray-tracing passes
     def _caustic_pass(self):
@@ -433,13 +466,34 @@ class AquariumRenderer:
         self.vao_empty["blit"].render(moderngl.TRIANGLES, vertices=3)
         ctx.disable(moderngl.BLEND)
 
-    def _dof_pass(self, t):
+    def _taa_pass(self, eye, view):
+        """Temporal anti-aliasing / accumulation on the resolved HDR scene."""
+        ctx = self.ctx
+        sw, sh = self.scene_size
+        hist_tex = self.taa[self._taa_i][0]
+        out_tex, out_fbo = self.taa[1 - self._taa_i]
+        out_fbo.use()
+        ctx.viewport = (0, 0, sw, sh)
+        self.scene_tex.use(0)
+        hist_tex.use(1)
+        p = self.p["taa"]
+        self._set(p, "u_cur", 0)
+        self._set(p, "u_hist", 1)
+        cur_vp = self.proj @ view
+        self._mat(p, "u_prevVP", cur_vp if self._prev_vp is None else self._prev_vp)
+        self._set(p, "u_first", 1.0 if self._prev_vp is None else 0.0)
+        self.vao_empty["taa"].render(moderngl.TRIANGLES, vertices=3)
+        self._prev_vp = cur_vp
+        self._taa_i = 1 - self._taa_i
+        return out_tex
+
+    def _dof_pass(self, t, src):
         """Depth of field from the distance stored in the scene's alpha channel."""
         ctx = self.ctx
         sw, sh = self.scene_size
         self.dof_fbo.use()
         ctx.viewport = (0, 0, sw, sh)
-        self.scene_tex.use(0)
+        src.use(0)
         d = self.p["dof"]
         self._set(d, "u_scene", 0)
         self._set(d, "u_texel", (1.0 / sw, 1.0 / sh))
@@ -465,6 +519,9 @@ class AquariumRenderer:
             self._set(self.p["blur"], "u_tex", 0)
             self._set(self.p["blur"], "u_dir", (dx, dy))
             self.vao_empty["blur"].render(moderngl.TRIANGLES, vertices=3)
+
+    def end_frame(self):
+        self._frame_idx += 1
 
     # ------------------------------------------------------------- utilities
     def screenshot(self, path):

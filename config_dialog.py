@@ -24,7 +24,8 @@ CHECKS = [
     ("shark", "An occasional shark patrols the far water"),
     ("bubbles", "Bubble streams"),
     ("camera_drift", "Slow camera drift"),
-    ("raytracing", "Ray-traced shadows, caustics, light shafts and water mirror"),
+    ("raytracing", "Ray-traced shadows, caustics, AO, light shafts and water mirror"),
+    ("taa", "Temporal anti-aliasing"),
 ]
 
 

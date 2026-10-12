@@ -34,6 +34,7 @@ DEFAULTS = {
     "sharpness": 0.2,         # 0..2 FSR sharpening in stops (0 = sharpest, AMD default 0.2)
     "dof": 0.45,              # 0..1 depth of field strength
     "lens": 0.35,             # 0..1 chromatic aberration and film grain
+    "taa": True,              # temporal anti-aliasing (also smooths the traced AO and light shafts)
 }
 RANGES = {
     "fish": (5, 200), "fish_scale": (0.6, 3.0), "jellyfish": (0, 8),

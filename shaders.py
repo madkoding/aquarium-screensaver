@@ -84,8 +84,8 @@ vec3 apply_fog(vec3 col, vec3 world, vec2 fragUV) {
 }
 
 vec3 ambient(vec3 N) {
-    vec3 up = vec3(0.16, 0.34, 0.50) * (0.25 + 0.75 * u_day);
-    vec3 down = vec3(0.03, 0.07, 0.10) * (0.4 + 0.6 * u_day);
+    vec3 up = vec3(0.16, 0.34, 0.50) * (0.40 + 0.60 * u_day);
+    vec3 down = vec3(0.03, 0.07, 0.10) * (0.55 + 0.45 * u_day);
     return mix(down, up, N.y * 0.5 + 0.5);
 }
 """
@@ -183,6 +183,82 @@ float rt_flux(vec3 p, float lod) {
 // Sunlight fades with depth below the surface (ray-traced mode only).
 float sun_atten(vec3 p) {
     return mix(1.0, exp(-max(u_surf - p.y, 0.0) * 0.08), u_rt);
+}
+
+uniform sampler2D u_wgrid;          // occluder ids per world cell, for AO rays (R32F)
+uniform vec2 u_wgridOrigin;
+uniform float u_wcell;
+uniform ivec2 u_wgridDim;
+uniform float u_frame;
+const int WGRID_K = 14;
+
+float ell_hit(Occ o, vec3 ro, vec3 rd, out vec3 n) {
+    vec3 d = ro - o.c;
+    vec3 lo = vec3(dot(d, o.X), dot(d, o.Y), dot(d, o.Z)) / o.r;
+    vec3 ld = vec3(dot(rd, o.X), dot(rd, o.Y), dot(rd, o.Z)) / o.r;
+    float a = dot(ld, ld);
+    float b = dot(lo, ld);
+    float c = dot(lo, lo) - 1.0;
+    float disc = b * b - a * c;
+    n = vec3(0.0, 1.0, 0.0);
+    if (disc < 0.0) return -1.0;
+    float t = (-b - sqrt(disc)) / a;
+    if (t <= 0.0) return -1.0;
+    vec3 pl = (lo + ld * t) / o.r;
+    n = normalize(o.X * pl.x + o.Y * pl.y + o.Z * pl.z);
+    return t;
+}
+
+
+vec3 cosine_dir(vec3 N, vec2 xi) {
+    float r = sqrt(xi.x);
+    float a = 6.2831853 * xi.y;
+    vec3 T = normalize(abs(N.y) < 0.99 ? cross(N, vec3(0.0, 1.0, 0.0)) : cross(N, vec3(1.0, 0.0, 0.0)));
+    vec3 B = cross(N, T);
+    return normalize(T * (r * cos(a)) + B * (r * sin(a)) + N * sqrt(max(1.0 - xi.x, 0.0)));
+}
+
+// Ambient occlusion: ONE random cosine-weighted ray per pixel per frame, traced
+// against the occluders near p. The TAA pass averages the frames into a smooth result.
+float rt_ao(vec3 p, vec3 N, int skip) {
+    if (u_rt < 0.5) return 1.0;
+    vec2 xi = vec2(hash12(gl_FragCoord.xy + u_frame * 7.13), hash12(gl_FragCoord.yx * 1.7 + u_frame * 3.91));
+    vec3 d = cosine_dir(N, xi);
+    const float maxd = 1.5;
+    // The ray is shorter than a cell, so it only visits the cell of p and the
+    // cell of its far end; every occluder touching it is registered in one of them.
+    ivec2 cA = ivec2(floor((p.xz - u_wgridOrigin) / u_wcell));
+    ivec2 cB = ivec2(floor(((p + d * maxd).xz - u_wgridOrigin) / u_wcell));
+    float ao = 1.0;
+    for (int pass = 0; pass < 2; pass++) {
+        ivec2 c = (pass == 0) ? cA : cB;
+        if (pass == 1 && c == cA) break;
+        if (c.x < 0 || c.y < 0 || c.x >= u_wgridDim.x || c.y >= u_wgridDim.y) continue;
+        for (int k = 0; k < WGRID_K; k++) {
+            float idf = texelFetch(u_wgrid, ivec2(c.x * WGRID_K + k, c.y), 0).r;
+            if (idf < 0.0) break;
+            int id = int(idf + 0.5);
+            if (id == skip) continue;
+            vec3 oc = p - texelFetch(u_occ, ivec2(id, 0), 0).xyz;
+            float rmax = texelFetch(u_occ, ivec2(id, 3), 0).w;
+            float b = dot(oc, d);
+            if ((b > 0.0 && dot(oc, oc) > rmax * rmax) || dot(oc, oc) - b * b > rmax * rmax) continue;
+            vec3 nn;
+            float t = ell_hit(load_occ(id), p, d, nn);
+            if (t > 0.0 && t < maxd) ao = min(ao, mix(0.08, 1.0, t / maxd));
+        }
+    }
+    return ao;
+}
+
+// Light bounced up from the sunlit sand onto surfaces that face it (radiosity-lite).
+vec3 bounce_light(vec3 N, vec3 p) {
+    float fh = floor_h(p.xz);
+    float h = max(p.y - fh, 0.0);
+    float f = exp(-h * 0.65) * (0.5 - 0.5 * N.y);
+    vec3 sandP = vec3(p.x, fh, p.z);
+    float flux = (u_rt > 0.5) ? mix(0.7, 1.0, clamp(rt_flux(sandP, 2.0) * 0.5, 0.0, 1.5)) : 1.0;
+    return vec3(0.80, 0.72, 0.52) * u_sunCol * sun_atten(sandP) * 0.30 * f * flux;
 }
 """
 
@@ -342,7 +418,9 @@ void main() {
     float c = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                            : caustics(v_world.xz * 0.16, u_time * 0.55);
     float shallow = smoothstep(-6.0, 0.0, v_world.z);   // brighter nearer the glass
-    vec3 col = albedo * (ambient(N) + u_sunCol * diff * 0.75 * sh * att)
+    float ao = (dist < 14.0) ? rt_ao(v_world + N * 0.03, N, -1) : 1.0;
+    vec3 bnc = (mat != 0) ? bounce_light(N, v_world) : vec3(0.0);
+    vec3 col = albedo * ((ambient(N) + bnc) * ao + u_sunCol * diff * 0.75 * sh * att)
              + albedo * u_sunCol * c * sh * att * (0.55 + 0.9 * shallow);
     if (mat == 6) col += albedo * u_sunCol * att * sh * pow(max(-dot(N, L), 0.0), 1.5) * 0.5;   // light through the fan
     col += gloss * pow(max(dot(N, normalize(L + V)), 0.0), 60.0) * u_sunCol * sh * att;
@@ -552,7 +630,8 @@ void main() {
     float sh = rt_shadow(v_world + N * 0.01, L, u_nstatic + v_id);
     float att = sun_atten(v_world);
     float ndv = max(dot(N, V), 0.0);
-    vec3 lit = ambient(N) + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
+    float ao = rt_ao(v_world + N * 0.02, N, u_nstatic + v_id);
+    vec3 lit = (ambient(N) + bounce_light(N, v_world)) * ao + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
     vec3 col = albedo * lit;
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
@@ -599,7 +678,7 @@ void main() {
     float att = sun_atten(v_world);
     float ndl = dot(N, L);
     float through = pow(max(-ndl, 0.0), 1.4);          // sun shining through the membrane
-    vec3 lit = ambient(N) + u_sunCol * att * sh * (0.40 * abs(ndl) + 0.75 * through);
+    vec3 lit = ambient(N) + bounce_light(N, v_world) * 0.5 + u_sunCol * att * sh * (0.40 * abs(ndl) + 0.75 * through);
     vec3 col = albedo * lit;
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
@@ -667,7 +746,8 @@ void main() {
     float trans = pow(max(dot(-N, L), 0.0), 1.5) * 0.5;      // light shining through the blade
     float sh = rt_shadow(v_world, L, -1);
     float att = sun_atten(v_world);
-    vec3 lit = ambient(N) + u_sunCol * att * sh * (0.45 * abs(dot(N, L)) + trans);
+    float ao = rt_ao(v_world, N, -1);
+    vec3 lit = (ambient(N) + bounce_light(N, v_world)) * ao + u_sunCol * att * sh * (0.45 * abs(dot(N, L)) + trans);
     vec3 col = albedo * lit;
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.1, u_time * 0.55);
@@ -1031,23 +1111,6 @@ uniform mat4 u_invVP;
 in vec2 uv;
 out vec4 o_col;
 
-float ell_hit(Occ o, vec3 ro, vec3 rd, out vec3 n) {
-    vec3 d = ro - o.c;
-    vec3 lo = vec3(dot(d, o.X), dot(d, o.Y), dot(d, o.Z)) / o.r;
-    vec3 ld = vec3(dot(rd, o.X), dot(rd, o.Y), dot(rd, o.Z)) / o.r;
-    float a = dot(ld, ld);
-    float b = dot(lo, ld);
-    float c = dot(lo, lo) - 1.0;
-    float disc = b * b - a * c;
-    n = vec3(0.0, 1.0, 0.0);
-    if (disc < 0.0) return -1.0;
-    float t = (-b - sqrt(disc)) / a;
-    if (t <= 0.0) return -1.0;
-    vec3 pl = (lo + ld * t) / o.r;
-    n = normalize(o.X * pl.x + o.Y * pl.y + o.Z * pl.z);
-    return t;
-}
-
 void main() {
     vec3 ro = u_camPos;
     vec4 w = u_invVP * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
@@ -1197,5 +1260,49 @@ void main() {
         wsum += w;
     }
     o_col = vec4(acc / wsum, center.a);
+}
+"""
+
+
+# Temporal anti-aliasing: reproject last frame's result through the camera
+# (distance is in the alpha channel), clamp it to the local colour range of the
+# current frame to reject ghosts, and blend. It also averages the noisy
+# stochastic effects (AO rays, volume jitter, depth-of-field taps).
+TAA_FS = """
+#version 330
+uniform sampler2D u_cur;
+uniform sampler2D u_hist;
+uniform mat4 u_invVP;
+uniform mat4 u_prevVP;
+uniform vec3 u_camPos;
+uniform float u_first;
+in vec2 uv;
+out vec4 o_col;
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    ivec2 sz = textureSize(u_cur, 0);
+    vec4 cur = texelFetch(u_cur, px, 0);
+    vec3 mn = cur.rgb, mx = cur.rgb, m1 = cur.rgb, m2 = cur.rgb * cur.rgb;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            if (i == 0 && j == 0) continue;
+            vec3 c = texelFetch(u_cur, clamp(px + ivec2(i, j), ivec2(0), sz - 1), 0).rgb;
+            mn = min(mn, c); mx = max(mx, c); m1 += c; m2 += c * c;
+        }
+    }
+    vec3 mu = m1 / 9.0;
+    vec3 sd = sqrt(max(m2 / 9.0 - mu * mu, 0.0));
+    vec3 lo = min(mu - 1.5 * sd, cur.rgb);
+    vec3 hi = max(mu + 1.5 * sd, cur.rgb);
+
+    vec2 suv = (vec2(px) + 0.5) / vec2(sz);
+    vec4 w = u_invVP * vec4(suv * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize(w.xyz / w.w - u_camPos);
+    float dist = cur.a > 0.0 ? cur.a : 120.0;
+    vec4 pc = u_prevVP * vec4(u_camPos + dir * dist, 1.0);
+    vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
+    bool valid = u_first < 0.5 && pc.w > 0.0 && all(greaterThan(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)));
+    vec3 hist = clamp(texture(u_hist, puv).rgb, lo, hi);
+    o_col = vec4(valid ? mix(cur.rgb, hist, 0.88) : cur.rgb, cur.a);
 }
 """
