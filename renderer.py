@@ -23,7 +23,8 @@ import meshes
 import rt
 import shaders as S
 import world
-from settings import QUALITY, WATER
+from fsr import FSR
+from settings import QUALITY, UPSCALE_RATIO, WATER
 from sim import INST_FLOATS, Sim
 
 MAX_JELLY = 8
@@ -54,6 +55,9 @@ class AquariumRenderer:
 
         samples, scale = QUALITY[cfg["quality"]]
         self.samples = samples
+        ratio = UPSCALE_RATIO[cfg["upscaling"]]
+        self.fsr = FSR(c) if ratio > 1.0 else None     # render fewer pixels, upscale with FSR
+        scale /= ratio
         sw, sh = max(2, int(vw * scale)), max(2, int(vh * scale))
         self.scene_size = (sw, sh)
         self.rt_on = bool(cfg["raytracing"])
@@ -166,6 +170,7 @@ class AquariumRenderer:
                 color_attachments=[self.scene_tex],
                 depth_attachment=c.depth_renderbuffer((sw, sh)))
         self.refr_tex, self.refr_fbo = tex(sw, sh)       # opaque scene, for refraction
+        self.post_tex, self.post_fbo = tex(sw, sh)       # tone-mapped frame fed to FSR
         self.q = [tex(sw // 4, sh // 4), tex(sw // 4, sh // 4),
                   tex(sw // 16, sh // 16), tex(sw // 16, sh // 16)]
 
@@ -346,8 +351,12 @@ class AquariumRenderer:
             self._blur_chain(self.q[0][0], self.q[2], self.q[3])
 
         vw, vh = self.size
-        ctx.screen.use()
-        ctx.viewport = (0, 0, vw, vh)
+        if self.fsr:                       # compose at render resolution, upscale afterwards
+            self.post_fbo.use()
+            ctx.viewport = (0, 0, sw, sh)
+        else:
+            ctx.screen.use()
+            ctx.viewport = (0, 0, vw, vh)
         self.scene_tex.use(0)
         self.q[0][0].use(1)
         self.q[2][0].use(2)
@@ -357,7 +366,11 @@ class AquariumRenderer:
         self._set(f, "u_g1", bloom * 0.9)
         self._set(f, "u_g2", bloom * 1.3)
         self._set(f, "u_vig", float(self.cfg["vignette"]))
+        self._set(f, "u_dither", 0.0 if self.fsr else 1.0)
         self.vao_empty["final"].render(moderngl.TRIANGLES, vertices=3)
+        if self.fsr:
+            self.fsr.upscale(self.post_tex, (sw, sh), ctx.screen, (vw, vh),
+                             sharpness=float(self.cfg["sharpness"]), dither=1.0)
 
     # --------------------------------------------------------- ray-tracing passes
     def _caustic_pass(self):

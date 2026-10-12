@@ -8,6 +8,7 @@ CHOICES = [  # (key, label)
     ("water", "Water color"),
     ("light", "Lighting (auto follows your clock)"),
     ("quality", "Quality"),
+    ("upscaling", "Upscaling (AMD FSR 1.0)"),
 ]
 SLIDERS = [  # (key, label, from, to, decimals)
     ("fish", "Number of fish", 5, 200, 0),
@@ -15,6 +16,7 @@ SLIDERS = [  # (key, label, from, to, decimals)
     ("jellyfish", "Jellyfish", 0, 8, 0),
     ("bloom", "Bloom (glow)", 0.0, 1.0, 2),
     ("vignette", "Vignette", 0.0, 1.0, 2),
+    ("sharpness", "FSR sharpening (0 = sharpest)", 0.0, 2.0, 2),
 ]
 CHECKS = [
     ("shark", "An occasional shark patrols the far water"),

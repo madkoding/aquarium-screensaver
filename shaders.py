@@ -785,6 +785,7 @@ uniform float u_time;
 uniform float u_g1;
 uniform float u_g2;
 uniform float u_vig;
+uniform float u_dither;
 in vec2 uv;
 out vec4 o_col;
 float hash12(vec2 p) {
@@ -799,7 +800,7 @@ void main() {
     vec2 d = (uv - 0.5) * vec2(u_res.x / u_res.y * 0.55, 1.0) * 2.0;
     c *= 1.0 - u_vig * smoothstep(0.55, 1.6, length(d));
     c = c / (1.0 + 0.12 * c);                    // gentle highlight roll-off
-    c += (hash12(gl_FragCoord.xy + fract(u_time) * 91.0) - 0.5) / 255.0;   // de-band gradients
+    c += (hash12(gl_FragCoord.xy + fract(u_time) * 91.0) - 0.5) / 255.0 * u_dither;   // de-band gradients
     o_col = vec4(c, 1.0);
 }
 """

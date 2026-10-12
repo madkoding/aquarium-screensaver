@@ -9,6 +9,8 @@ WATER = {
     "lagoon": ((0.12, 0.62, 0.55), (0.01, 0.16, 0.20)),
     "aegean": ((0.08, 0.50, 0.82), (0.01, 0.10, 0.32)),
 }
+# AMD FSR 1.0 upscaling: name -> how many times fewer pixels per axis are rendered
+UPSCALE_RATIO = {"off": 1.0, "quality": 1.5, "balanced": 1.7, "performance": 2.0}
 QUALITY = {   # name -> (MSAA samples, render scale)
     "low": (0, 0.75),
     "medium": (2, 1.0),
@@ -28,14 +30,17 @@ DEFAULTS = {
     "vignette": 0.30,         # 0..1
     "camera_drift": True,     # slow, subtle camera sway
     "raytracing": True,       # traced shadows, caustics, light shafts, water mirror
+    "upscaling": "off",       # off | quality (1.5x) | balanced (1.7x) | performance (2x), AMD FSR 1.0
+    "sharpness": 0.2,         # 0..2 FSR sharpening in stops (0 = sharpest, AMD default 0.2)
 }
 RANGES = {
     "fish": (5, 200), "fish_scale": (0.6, 3.0), "jellyfish": (0, 8),
-    "bloom": (0.0, 1.0), "vignette": (0.0, 1.0),
+    "bloom": (0.0, 1.0), "vignette": (0.0, 1.0), "sharpness": (0.0, 2.0),
 }
 CHOICES = {
     "water": list(WATER), "quality": list(QUALITY),
     "light": ["auto", "day", "dusk", "night"],
+    "upscaling": list(UPSCALE_RATIO),
 }
 
 

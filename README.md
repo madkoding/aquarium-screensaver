@@ -29,6 +29,7 @@ A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. 
 - **Underwater look:** depth fog that absorbs red first, bubble streams, drifting marine snow, swaying seaweed, rocks, coral heads, and translucent pulsing jellyfish.
 - **Day, dusk and night:** lighting follows your clock (or pick one). At night the neon tetras glow.
 - **Bloom, vignette, MSAA and de-banding dither** for a clean image, with three quality levels.
+- **AMD FSR 1.0 upscaling (optional):** render at 67%, 59% or 50% of the resolution per axis and upscale with a GLSL port of AMD's EASU + RCAS. On a RTX 3060 across three monitors it takes the uncapped frame rate from about 81 FPS to 128 (quality), 148 (balanced) or 177 FPS (performance).
 - **Settings dialog** and a live **preview** in the Windows screensaver picker.
 - **Paced to your displays:** frames are capped at the fastest monitor's refresh rate (60, 75, 144 Hz...) and drop to 30 FPS on battery. Display hot-plugging is detected automatically.
 - Exits on any key press, click, or mouse movement.
@@ -57,6 +58,8 @@ Open **Settings...** in the screensaver picker. Values are stored in `%APPDATA%\
 | `bubbles` | Bubble streams. |
 | `bloom` / `vignette` | Glow strength and corner darkening. |
 | `camera_drift` | Slow, subtle camera sway. |
+| `upscaling` | AMD FSR 1.0: `off`, `quality` (1.5x), `balanced` (1.7x) or `performance` (2x). |
+| `sharpness` | FSR sharpening in stops: 0 is sharpest, 2 softest (AMD's default is 0.2). |
 | `raytracing` | Ray-traced shadows, caustics, light shafts, water mirror and refraction. Turn it off for the cheaper procedural look. |
 
 ## Build from source
@@ -94,6 +97,7 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 |---|---|
 | `aquarium_saver.py` | Entry point: argument parsing (`/s`, `/c`, `/p`), main loop, frame pacing, hot-plug and battery handling. |
 | `renderer.py` | OpenGL pipeline: caustics, mirror, scene (MSAA), refraction copy, volume, bloom, final composite. |
+| `fsr.py` | Standalone, reusable AMD FSR 1.0 (EASU + RCAS) for moderngl: `FSR(ctx).upscale(src_tex, src_size, dst_fbo, dst_size, sharpness)`. |
 | `rt.py` | Ray-tracing data: ellipsoid occluder texture, sun-space acceleration grid, caustic map layout, surface grid. |
 | `shaders.py` | All GLSL: fish animation and skin patterns, shadow rays, caustic tracing, mirror and volume passes, refraction, fog, seaweed, jellyfish, bubbles. |
 | `meshes.py` | Procedural geometry: fish, seaweed ribbons, rocks, coral, seabed, jellyfish. |
@@ -116,3 +120,7 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 
 - Windows 10/11 with an OpenGL 3.3 capable GPU
 - Python 3.10+, `pygame-ce`, `numpy`, `moderngl` (only to run from source)
+
+## Credits
+
+- Upscaling is based on AMD FidelityFX Super Resolution 1.0 (MIT license); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
