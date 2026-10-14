@@ -423,7 +423,7 @@ void main() {
     vec3 col = albedo * ((ambient(N) + bnc) * ao + u_sunCol * diff * 0.75 * sh * att)
              + albedo * u_sunCol * c * sh * att * (0.55 + 0.9 * shallow);
     if (mat == 6) col += albedo * u_sunCol * att * sh * pow(max(-dot(N, L), 0.0), 1.5) * 0.5;   // light through the fan
-    col += gloss * pow(max(dot(N, normalize(L + V)), 0.0), 60.0) * u_sunCol * sh * att;
+    col += gloss * pow(max(dot(N, normalize(L + V + vec3(1e-5))), 0.0), 60.0) * u_sunCol * sh * att;
     o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), dist);
 }
 """
@@ -639,18 +639,18 @@ void main() {
 
     // subsurface scattering: backlit thin edges glow with the light passing through
     float back = pow(max(dot(V, -L), 0.0), 2.0);
-    col += albedo * u_sunCol * att * sh * back * pow(1.0 - ndv, 1.5) * 0.8;
+    col += albedo * u_sunCol * att * sh * back * pow(clamp(1.0 - ndv, 0.0, 1.0), 1.5) * 0.8;
     // thin-film iridescence on shiny species
     if (pat == 0 || pat == 4 || pat == 5) {
         vec3 irid = 0.5 + 0.5 * cos(6.2831853 * (ndv * 1.2 + vec3(0.0, 0.33, 0.67)));
-        col += albedo * irid * 0.14 * pow(1.0 - ndv, 1.5) * (0.3 + 0.7 * att * sh);
+        col += albedo * irid * 0.14 * pow(clamp(1.0 - ndv, 0.0, 1.0), 1.5) * (0.3 + 0.7 * att * sh);
     }
 
-    vec3 H = normalize(L + V);
+    vec3 H = normalize(L + V + vec3(1e-5));
     float spec = pow(max(dot(N, H), 0.0), 70.0) * 0.55 * sh;
     spec += eyeMask * pow(max(dot(N, H), 0.0), 300.0) * 3.0 * sh;      // wet, glossy eye
     col += spec * u_sunCol;
-    float rim = pow(1.0 - ndv, 3.0);
+    float rim = pow(clamp(1.0 - ndv, 0.0, 1.0), 3.0);
     col += rim * vec3(0.10, 0.26, 0.36) * (0.4 + 0.6 * u_day);
     col += albedo * emis * 0.9;                       // neon stripes glow (feeds the bloom)
 
@@ -799,7 +799,7 @@ void main() {
     vec3 N = normalize(v_nrm);
     vec3 V = normalize(u_camPos - v_world);
     float ndv = abs(dot(N, V));
-    float fres = pow(1.0 - ndv, 2.0);
+    float fres = pow(clamp(1.0 - ndv, 0.0, 1.0), 2.0);
     vec2 uv = gl_FragCoord.xy / u_res;
 
     // Lens: bend the view ray by the surface normal; pixels-per-world-unit
@@ -980,7 +980,8 @@ void main() {
         float c = (fi + hash12(vec2(fi, 3.0))) / 18.0 * (aspect + 0.6) - 0.3;
         float w = 0.05 + 0.06 * hash12(vec2(fi, 7.0));
         float flick = 0.55 + 0.45 * sin(u_time * (0.25 + 0.2 * hash12(vec2(fi, 1.0))) + fi * 2.1);
-        sum += exp(-pow((q - c) / w, 2.0)) * flick;
+        float z = (q - c) / w;
+        sum += exp(-z * z) * flick;
     }
     float depth = pow(clamp(uv.y, 0.0, 1.0), 1.6);
     float a = sum * depth * u_rays;
@@ -995,11 +996,13 @@ uniform sampler2D u_tex;
 uniform vec2 u_texel;
 in vec2 uv;
 out vec4 o_col;
+
+vec3 safe3(vec3 c) { return (any(isnan(c)) || any(isinf(c))) ? vec3(0.0) : c; }
 void main() {   // 4 bilinear taps = a 4x4 box average
-    vec3 c = texture(u_tex, uv + u_texel * vec2(-1.0, -1.0)).rgb
-           + texture(u_tex, uv + u_texel * vec2( 1.0, -1.0)).rgb
-           + texture(u_tex, uv + u_texel * vec2(-1.0,  1.0)).rgb
-           + texture(u_tex, uv + u_texel * vec2( 1.0,  1.0)).rgb;
+    vec3 c = safe3(texture(u_tex, uv + u_texel * vec2(-1.0, -1.0)).rgb)
+           + safe3(texture(u_tex, uv + u_texel * vec2( 1.0, -1.0)).rgb)
+           + safe3(texture(u_tex, uv + u_texel * vec2(-1.0,  1.0)).rgb)
+           + safe3(texture(u_tex, uv + u_texel * vec2( 1.0,  1.0)).rgb);
     // keep only the bright parts so the whole sea doesn't haze over
     c *= 0.25;
     float l = max(max(c.r, c.g), c.b);
@@ -1053,6 +1056,7 @@ void main() {
            + texture(u_bloom2, uv).rgb * u_g2;
     vec2 d = (uv - 0.5) * vec2(u_res.x / u_res.y * 0.55, 1.0) * 2.0;
     c *= 1.0 - u_vig * smoothstep(0.55, 1.6, length(d));
+    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
     c = c / (1.0 + 0.12 * c);                    // gentle highlight roll-off
     c += (hash12(gl_FragCoord.xy + fract(u_time) * 91.0) - 0.5) / 255.0 * u_dither;   // de-band gradients
     c += (hash12(gl_FragCoord.xy * 1.37 + fract(u_time * 7.0) * 131.0) - 0.5) * u_grain * 0.06
@@ -1170,7 +1174,7 @@ void main() {
               1.0 - exp(-total * u_fog * 0.8));         // the surface is lit from above
     vec3 Rr = refract(rd, n, 1.333);                         // water -> air, bent away from the normal
     vec3 Ls = normalize(u_sunDir);
-    float sd = max(dot(normalize(Rr), Ls), 0.0);
+    float sd = (dot(Rr, Rr) > 1e-6) ? max(dot(normalize(Rr), Ls), 0.0) : 0.0;
     vec3 sky = mix(vec3(0.78, 0.89, 1.0), vec3(0.16, 0.42, 0.92), pow(clamp(Rr.y, 0.0, 1.0), 0.55));
     sky = sky * (0.12 + 0.88 * u_day) + u_sunCol * (pow(sd, 600.0) * 12.0 + pow(sd, 14.0) * 0.5);
     col = mix(col, sky, window * 0.9);
@@ -1245,6 +1249,7 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 
 void main() {
     vec4 center = texture(u_scene, uv);
+    if (any(isnan(center.rgb)) || any(isinf(center.rgb))) center.rgb = vec3(0.0);
     float cc = coc(center.a);
     if (cc < 0.6) { o_col = center; return; }
     float ang0 = ign(gl_FragCoord.xy + fract(u_time) * 40.0) * 6.2831853;
@@ -1256,7 +1261,7 @@ void main() {
         vec4 s = texture(u_scene, uv + vec2(cos(a), sin(a)) * r * cc * u_texel);
         // a neighbour contributes if it lies behind us, or if its own blur reaches this far
         float w = (s.a == 0.0 || s.a >= center.a - 0.25) ? 1.0 : smoothstep(0.0, 1.0, coc(s.a) - r * cc + 1.0);
-        acc += s.rgb * w;
+        acc += ((any(isnan(s.rgb)) || any(isinf(s.rgb))) ? center.rgb : s.rgb) * w;
         wsum += w;
     }
     o_col = vec4(acc / wsum, center.a);
@@ -1278,20 +1283,29 @@ uniform vec3 u_camPos;
 uniform float u_first;
 in vec2 uv;
 out vec4 o_col;
+bool bad3(vec3 c) { return any(isnan(c)) || any(isinf(c)); }
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
     ivec2 sz = textureSize(u_cur, 0);
     vec4 cur = texelFetch(u_cur, px, 0);
-    vec3 mn = cur.rgb, mx = cur.rgb, m1 = cur.rgb, m2 = cur.rgb * cur.rgb;
+    bool curBad = bad3(cur.rgb);
+
+    vec3 mn = vec3(1e9), mx = vec3(-1e9), m1 = vec3(0.0), m2 = vec3(0.0);
+    float n = 0.0;
     for (int j = -1; j <= 1; j++) {
         for (int i = -1; i <= 1; i++) {
             if (i == 0 && j == 0) continue;
             vec3 c = texelFetch(u_cur, clamp(px + ivec2(i, j), ivec2(0), sz - 1), 0).rgb;
-            mn = min(mn, c); mx = max(mx, c); m1 += c; m2 += c * c;
+            if (bad3(c)) continue;
+            mn = min(mn, c); mx = max(mx, c); m1 += c; m2 += c * c; n += 1.0;
         }
     }
-    vec3 mu = m1 / 9.0;
-    vec3 sd = sqrt(max(m2 / 9.0 - mu * mu, 0.0));
+    if (n < 1.0) { m1 = vec3(0.0); m2 = vec3(0.0); mn = vec3(0.0); mx = vec3(0.0); n = 1.0; }
+    if (curBad) cur.rgb = m1 / n;                     // heal an isolated NaN/Inf from its neighbours
+    mn = min(mn, cur.rgb); mx = max(mx, cur.rgb);
+    m1 += cur.rgb; m2 += cur.rgb * cur.rgb; n += 1.0;
+    vec3 mu = m1 / n;
+    vec3 sd = sqrt(max(m2 / n - mu * mu, 0.0));
     vec3 lo = min(mu - 1.5 * sd, cur.rgb);
     vec3 hi = max(mu + 1.5 * sd, cur.rgb);
 
@@ -1302,7 +1316,9 @@ void main() {
     vec4 pc = u_prevVP * vec4(u_camPos + dir * dist, 1.0);
     vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
     bool valid = u_first < 0.5 && pc.w > 0.0 && all(greaterThan(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)));
-    vec3 hist = clamp(texture(u_hist, puv).rgb, lo, hi);
+    vec3 hist = texture(u_hist, valid ? puv : vec2(0.5)).rgb;
+    if (bad3(hist)) valid = false;                    // never carry a bad history forward
+    hist = clamp(hist, lo, hi);
     o_col = vec4(valid ? mix(cur.rgb, hist, 0.88) : cur.rgb, cur.a);
 }
 """
