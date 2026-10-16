@@ -64,11 +64,6 @@ h2 + p.sub { color: var(--muted); margin: 0 0 26px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
 .card h3 { margin: 0 0 6px; font-size: 1.05rem; color: var(--accent); }
 .card p { margin: 0; color: var(--muted); font-size: 15px; }
-.gallery { display: grid; gap: 18px; grid-template-columns: repeat(2, 1fr); }
-@media (max-width: 700px) { .gallery { grid-template-columns: 1fr; } }
-.gallery figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-.gallery img { display: block; width: 100%; height: auto; }
-.gallery figcaption { padding: 12px 16px; color: var(--muted); font-size: 14px; }
 ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 14px; }
 ol.steps li { counter-increment: s; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: 16px 20px 16px 62px; position: relative; }
@@ -125,7 +120,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
   <header class="top">
     <a class="brand" href="#">Aquarium<span>Screensaver</span></a>
     <nav>
-      <a class="hide-sm" href="#features">Características</a><a class="hide-sm" href="#gallery">Galería</a><a class="hide-sm" href="#install">Instalar</a><a class="hide-sm" href="https://github.com/madkoding/aquarium-screensaver">GitHub</a>
+      <a class="hide-sm" href="#features">Características</a><a class="hide-sm" href="#install">Instalar</a><a class="hide-sm" href="https://github.com/madkoding/aquarium-screensaver">GitHub</a>
       <a class="lang" href="../" data-set-lang="en" hreflang="en" lang="en" title="View this page in English">English</a>
     </nav>
   </header>
@@ -160,17 +155,6 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
         <div class="card"><h3>Un arrecife detallado</h3><p>Corales ramificados y de mesa, abanicos de mar, anémonas, bosques de algas, guijarros, medusas, burbujas y nieve marina.</p></div>
         <div class="card"><h3>Día, atardecer y noche</h3><p>La luz sigue tu reloj. De noche los tetras neón brillan.</p></div>
         <div class="card"><h3>Rápido y ajustable</h3><p>Sincronizado con la frecuencia de tus monitores, escalado AMD FSR opcional y una ventana de ajustes con calidad, cantidad de peces, iluminación y más.</p></div>
-      </div>
-    </section>
-
-    <section id="gallery">
-      <h2>Galería</h2>
-      <p class="sub">Capturas reales de una configuración de tres monitores.</p>
-      <div class="gallery">
-        <figure><img src="../fish.png" alt="Pez ángel con aletas translúcidas y una medusa que actúa como lente" loading="lazy"><figcaption>Aletas translúcidas, escamas y una medusa que dobla la luz.</figcaption></figure>
-        <figure><img src="../detail.png" alt="Coral, abanicos de mar, guijarros y algas en el fondo marino" loading="lazy"><figcaption>El fondo marino: coral, abanicos de mar, guijarros y algas.</figcaption></figure>
-        <figure><img src="../mirror.png" alt="La superficie del agua vista desde abajo, reflejando el arrecife" loading="lazy"><figcaption>La superficie del agua vista desde abajo actúa como espejo.</figcaption></figure>
-        <figure><img src="../night.png" alt="El acuario de noche con tetras neón brillantes" loading="lazy"><figcaption>Noche: agua a la luz de la luna y tetras neón brillando.</figcaption></figure>
       </div>
     </section>
 
