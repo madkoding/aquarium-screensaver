@@ -1,8 +1,10 @@
 # Aquarium Screensaver
 
+**English** · [Español](README.es.md)
+
 A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. Every fish, coral and rock is generated from code (no model or texture files), schools swim as one continuous world across all your monitors, the lighting follows your clock, and shadows, ambient occlusion, caustics, light shafts, reflections and refractions are ray traced.
 
-**Website and install guide:** https://madkoding.github.io/aquarium-screensaver/
+**Website and install guide:** https://madkoding.github.io/aquarium-screensaver/ (also in [Spanish](https://madkoding.github.io/aquarium-screensaver/es/))
 
 ![Three monitors](docs/screenshot.png)
 
@@ -147,6 +149,10 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 
 - Windows 10/11 with an OpenGL 3.3 capable GPU
 - Python 3.10+, `pygame-ce`, `numpy`, `moderngl` (only to run from source)
+
+## License
+
+Copyright (C) 2026 madkoding. This project is free software, released under the [GNU General Public License v3.0](LICENSE): you can use, study, share and modify it, and redistribute modified versions under the same license. Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Credits
 

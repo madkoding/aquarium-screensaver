@@ -30,3 +30,20 @@ THE SOFTWARE.
 Changes made in the port: scalar 32-bit path only; `textureGather` is replaced
 by `texelFetch` so it runs on OpenGL 3.3; clamp-to-edge is done by hand; small
 epsilons guard divisions by zero in RCAS; an optional dither is added at the end.
+
+## Libraries bundled in the `.scr`
+
+The released `.scr` is a PyInstaller bundle. It includes these third-party
+components, each under its own license (see each project for the full text):
+
+| Component | License |
+|---|---|
+| Python (CPython) | PSF License |
+| pygame-ce and SDL2 | LGPL-2.1 (pygame-ce), zlib (SDL2) |
+| NumPy | BSD-3-Clause |
+| moderngl and glcontext | MIT |
+| Tcl/Tk (settings window) | Tcl/Tk license (BSD-style) |
+| PyInstaller bootloader | GPL-2.0-or-later with a bootloader exception |
+
+All of them are compatible with distributing this project under the GPL-3.0.
+The complete source code of this project is in this repository.
