@@ -6,6 +6,10 @@ Un protector de pantalla de acuario 3D en tiempo real para Windows, escrito en P
 
 **Web y guía de instalación:** https://madkoding.github.io/aquarium-screensaver/es/
 
+![Demo de Aquarium Screensaver (clip en bucle)](docs/demo.gif)
+
+*Clip de demostración en bucle del protector en funcionamiento.*
+
 ![Tres monitores](docs/screenshot.png)
 
 *Captura real de una configuración de 3 monitores (un ultrapanorámico central y dos pantallas verticales).*

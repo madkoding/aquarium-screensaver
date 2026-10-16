@@ -55,7 +55,7 @@ nav a.lang:hover { border-color: var(--accent); }
 .meta { color: var(--muted); font-size: 14px; margin-top: 12px; }
 .shot { margin: 34px auto 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--line);
   box-shadow: 0 20px 70px rgba(0,0,0,.55); }
-.shot img { display: block; width: 100%; height: auto; }
+.shot img, .shot video { display: block; width: 100%; height: auto; background: #000; }
 .caption { color: var(--muted); font-size: 14px; text-align: center; margin: 10px 0 0; }
 section { padding: 56px 0 8px; }
 h2 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -.01em; }
@@ -140,7 +140,13 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
         <a class="btn" href="https://github.com/madkoding/aquarium-screensaver">Ver en GitHub</a>
       </div>
       <p class="meta">Gratis · Windows 10/11 · unos 30 MB · <a href="https://github.com/madkoding/aquarium-screensaver/releases">todas las versiones</a></p>
-      <div class="shot"><img src="../screenshot.png" alt="El acuario ocupando tres monitores: cardúmenes, coral, algas y haces de luz" width="2000" height="676"></div>
+      <div class="shot">
+        <video id="demo" autoplay muted loop playsinline preload="auto" poster="../screenshot.png" width="1280" height="432" aria-label="El acuario ocupando tres monitores: cardúmenes, coral, algas y haces de luz">
+          <source src="../demo.webm" type="video/webm">
+          <source src="../demo.mp4" type="video/mp4">
+          <img src="../screenshot.png" alt="El acuario ocupando tres monitores: cardúmenes, coral, algas y haces de luz" width="2000" height="676">
+        </video>
+      </div>
       <p class="caption">Tres monitores, un único mundo submarino continuo.</p>
     </div>
 
@@ -223,5 +229,14 @@ python aquarium_saver.py /s</code></pre>
     <span>Escalado basado en <a href="https://github.com/GPUOpen-Effects/FidelityFX-FSR">AMD FidelityFX Super Resolution 1.0</a> (MIT).</span>
   </div>
 </footer>
+<script>
+/* Respect "reduce motion": show the still poster instead of the looping clip. */
+(function () {
+  var v = document.getElementById('demo');
+  if (v && window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    v.removeAttribute('autoplay'); v.pause(); v.controls = true;
+  }
+})();
+</script>
 </body>
 </html>

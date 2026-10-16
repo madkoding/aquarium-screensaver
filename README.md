@@ -6,6 +6,10 @@ A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. 
 
 **Website and install guide:** https://madkoding.github.io/aquarium-screensaver/ (also in [Spanish](https://madkoding.github.io/aquarium-screensaver/es/))
 
+![Aquarium Screensaver demo (looping clip)](docs/demo.gif)
+
+*Looping demo clip of the screensaver running.*
+
 ![Three monitors](docs/screenshot.png)
 
 *Real capture from a 3-monitor setup (a central ultrawide plus two portrait displays).*
