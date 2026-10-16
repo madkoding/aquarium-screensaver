@@ -214,13 +214,42 @@ python aquarium_saver.py /s</code></pre>
   </div>
 </footer>
 <script>
-/* Respect "reduce motion": show the still poster instead of the looping clip. */
+/* Hero clip: a looping muted video. If the browser blocks autoplay, can't decode it, or
+   it simply doesn't start, swap in the animated GIF so there is always motion.
+   "Reduce motion" is respected: show the still poster with controls instead. */
 (function () {
   var v = document.getElementById('demo');
-  if (v && window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    v.removeAttribute('autoplay'); v.pause(); v.controls = true;
+  if (!v) return;
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) { v.removeAttribute('autoplay'); v.pause(); v.controls = true; return; }
+  var swapped = false;
+  function useGif() {
+    if (swapped) return;
+    swapped = true;
+    var img = new Image();
+    img.src = '../demo.gif';
+    img.alt = v.getAttribute('aria-label') || '';
+    img.width = 1280; img.height = 432;
+    v.parentNode.replaceChild(img, v);
   }
+  v.addEventListener('error', useGif, true);          /* a <source> failed to load or decode */
+  var p = v.play && v.play();
+  if (p && p.catch) p.catch(useGif);                  /* autoplay blocked */
+  function watchdog() {                              /* silently paused (battery saver etc.) */
+    if (swapped) return;
+    if (document.hidden) {                           /* background tabs pause video: wait until visible */
+      document.addEventListener('visibilitychange', function once() {
+        if (document.hidden) return;
+        document.removeEventListener('visibilitychange', once);
+        setTimeout(watchdog, 2500);
+      });
+      return;
+    }
+    if (v.paused || v.currentTime < 0.05) useGif();
+  }
+  setTimeout(watchdog, 3000);
 })();
 </script>
+<noscript><style>#demo { display: none; }</style><div class="shot"><img src="../demo.gif" alt="El acuario ocupando tres monitores: cardúmenes, coral, algas y haces de luz" width="1280" height="432"></div></noscript>
 </body>
 </html>
