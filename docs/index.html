@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aquarium Screensaver — a real-time 3D aquarium for Windows</title>
+<meta name="description" content="A real-time 3D aquarium screensaver for Windows with procedural fish, schooling, ray-traced shadows, caustics and light shafts. Multi-monitor and free.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Aquarium Screensaver — a real-time 3D aquarium for Windows">
+<meta property="og:description" content="A real-time 3D aquarium screensaver for Windows with procedural fish, schooling, ray-traced shadows, caustics and light shafts. Multi-monitor and free.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://madkoding.github.io/aquarium-screensaver/screenshot.png">
+<meta property="og:url" content="https://madkoding.github.io/aquarium-screensaver/">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+:root {
+  --bg: #031018; --panel: #08202e; --line: #143a4d; --text: #e8f1ee; --muted: #9bb0aa;
+  --accent: #4fd1ff; --accent-2: #8be4ff; --on-accent: #02131c;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+a:hover { color: var(--accent-2); }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+header.top { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; gap: 12px; }
+.brand { font-weight: 700; letter-spacing: .02em; color: var(--text); text-decoration: none; }
+.brand span { color: var(--accent); }
+nav a { margin-left: 18px; color: var(--muted); text-decoration: none; font-size: 15px; }
+nav a:hover { color: var(--text); }
+.hero { text-align: center; padding: 36px 0 12px; }
+.hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1.1; margin: 0 0 14px; letter-spacing: -.02em; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero p.lead { max-width: 680px; margin: 0 auto 26px; color: var(--muted); font-size: 1.1rem; }
+.btns { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.btn {
+  display: inline-block; padding: 13px 24px; border-radius: 10px; font-weight: 650; text-decoration: none;
+  border: 1px solid var(--line); color: var(--text); background: var(--panel);
+}
+.btn:hover { border-color: var(--accent); color: var(--text); }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); box-shadow: 0 8px 30px rgba(79,209,255,.35); }
+.btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); color: var(--on-accent); }
+.meta { color: var(--muted); font-size: 14px; margin-top: 12px; }
+.shot { margin: 34px auto 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--line);
+  box-shadow: 0 20px 70px rgba(0,0,0,.55); }
+.shot img { display: block; width: 100%; height: auto; }
+.caption { color: var(--muted); font-size: 14px; text-align: center; margin: 10px 0 0; }
+section { padding: 56px 0 8px; }
+h2 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -.01em; }
+h2 + p.sub { color: var(--muted); margin: 0 0 26px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+.card h3 { margin: 0 0 6px; font-size: 1.05rem; color: var(--accent); }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.gallery { display: grid; gap: 18px; grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 700px) { .gallery { grid-template-columns: 1fr; } }
+.gallery figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.gallery img { display: block; width: 100%; height: auto; }
+.gallery figcaption { padding: 12px 16px; color: var(--muted); font-size: 14px; }
+ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 14px; }
+ol.steps li { counter-increment: s; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 20px 16px 62px; position: relative; }
+ol.steps li::before {
+  content: counter(s); position: absolute; left: 18px; top: 14px; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--accent); color: var(--on-accent); font-weight: 800; display: grid; place-items: center;
+}
+ol.steps strong { color: var(--text); }
+ol.steps p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+kbd, code { background: rgba(255,255,255,.07); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px;
+  font: 0.92em ui-monospace, Consolas, monospace; color: var(--text); }
+pre { background: #02050a; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
+pre code { border: 0; background: none; padding: 0; }
+details { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin-top: 14px; }
+details summary { cursor: pointer; font-weight: 600; }
+details p, details ul { color: var(--muted); font-size: 15px; }
+.note { border-left: 3px solid var(--accent); padding: 10px 16px; background: rgba(255,255,255,.03); border-radius: 0 10px 10px 0;
+  color: var(--muted); font-size: 15px; margin-top: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; width: 34%; }
+footer { margin-top: 70px; padding: 28px 0 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+@media (max-width: 560px) { nav { display: none; } .hero { padding-top: 14px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#">Aquarium<span>Screensaver</span></a>
+    <nav><a href="#features">Features</a><a href="#gallery">Gallery</a><a href="#install">Install</a><a href="https://github.com/madkoding/aquarium-screensaver">GitHub</a></nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <h1>A living <em>3D aquarium</em><br>for your desktop</h1>
+      <p class="lead">Procedural fish swim in schools across all your monitors, under rippling light, drifting bubbles and ray-traced shadows. Everything is generated by code: no video, no loops.</p>
+      <div class="btns">
+        <a class="btn primary" href="https://github.com/madkoding/aquarium-screensaver/releases/latest/download/Aquarium.scr">Download Aquarium.scr</a>
+        <a class="btn" href="#install">How to install</a>
+        <a class="btn" href="https://github.com/madkoding/aquarium-screensaver">View on GitHub</a>
+      </div>
+      <p class="meta">Free · Windows 10/11 · about 30 MB · <a href="https://github.com/madkoding/aquarium-screensaver/releases">all versions</a></p>
+      <div class="shot"><img src="screenshot.png" alt="The aquarium spanning three monitors: schools of fish, coral, kelp and light shafts" width="2000" height="676"></div>
+      <p class="caption">Three monitors, one continuous underwater world.</p>
+    </div>
+
+    <section id="features">
+      <h2>What you get</h2>
+      <p class="sub">Built from scratch with Python and OpenGL.</p>
+      <div class="grid">
+        <div class="card"><h3>One world across all monitors</h3><p>Fish swim from one screen to the next. Mixed sizes and orientations work.</p></div>
+        <div class="card"><h3>Eight species of procedural fish</h3><p>Neon tetras, clownfish, tangs, angelfish, discus, lionfish, tuna and a shark. They school, and they flee the shark.</p></div>
+        <div class="card"><h3>Ray-traced lighting</h3><p>Soft shadows, ambient occlusion, caustics from a moving surface, light shafts and a mirror-like water surface seen from below.</p></div>
+        <div class="card"><h3>A detailed reef</h3><p>Branching and table corals, sea fans, anemones, kelp forests, pebbles, jellyfish, bubbles and marine snow.</p></div>
+        <div class="card"><h3>Day, dusk and night</h3><p>The light follows your clock. At night the neon tetras glow.</p></div>
+        <div class="card"><h3>Fast and tunable</h3><p>Paced to your monitors&#x27; refresh rate, optional AMD FSR upscaling, and a settings window with quality, fish count, lighting and more.</p></div>
+      </div>
+    </section>
+
+    <section id="gallery">
+      <h2>Gallery</h2>
+      <p class="sub">Real captures from a three-monitor setup.</p>
+      <div class="gallery">
+        <figure><img src="fish.png" alt="Angelfish with translucent fins and a jellyfish acting as a lens" loading="lazy"><figcaption>Translucent fins, scales and a jellyfish bending the light.</figcaption></figure>
+        <figure><img src="detail.png" alt="Coral, sea fans, pebbles and kelp on the seabed" loading="lazy"><figcaption>The seabed: coral, sea fans, pebbles and kelp.</figcaption></figure>
+        <figure><img src="mirror.png" alt="The water surface seen from below, mirroring the reef" loading="lazy"><figcaption>The water surface seen from below acts as a mirror.</figcaption></figure>
+        <figure><img src="night.png" alt="The aquarium at night with glowing neon tetras" loading="lazy"><figcaption>Night: moonlit water and glowing neon tetras.</figcaption></figure>
+      </div>
+    </section>
+
+    <section id="install">
+      <h2>Download and install</h2>
+      <p class="sub">It takes about a minute. No installer, no account.</p>
+      <ol class="steps">
+        <li><strong>Download <code>Aquarium.scr</code></strong>
+          <p>Click the button above, or grab it from the <a href="https://github.com/madkoding/aquarium-screensaver/releases/latest">latest release</a> page (the file is under <em>Assets</em>).</p></li>
+        <li><strong>Right-click the file and choose <kbd>Install</kbd></strong>
+          <p>Windows opens the <em>Screen Saver Settings</em> window with it already selected. If Windows asks for administrator permission, accept: it copies the file where screensavers live.</p></li>
+        <li><strong>Click <kbd>Apply</kbd> and <kbd>OK</kbd></strong>
+          <p>Set how many minutes of inactivity you want in <em>Wait</em>. Use <kbd>Preview</kbd> to try it right away; any key or mouse movement exits.</p></li>
+        <li><strong>Optional: click <kbd>Settings…</kbd> to tune it</strong>
+          <p>Water colour, quality, number of fish, lighting (auto follows your clock), depth of field, ray tracing and AMD FSR upscaling. The defaults already look good and run smoothly.</p></li>
+      </ol>
+
+      <div class="note"><strong>Windows says "protected your PC"?</strong> The file is not code-signed (that needs a paid certificate), so SmartScreen or your antivirus may warn about it, as it does with many small tools. Click <kbd>More info</kbd> → <kbd>Run anyway</kbd>. If the right-click menu has no <em>Install</em>, right-click → <kbd>Properties</kbd> → tick <kbd>Unblock</kbd> → <kbd>OK</kbd> first. You can read every line of the source on GitHub and build it yourself.</div>
+
+      <details>
+        <summary>Can't find the Screen Saver Settings window?</summary>
+        <p>Press the Windows key and type <code>screen saver</code>, then open <em>Change screen saver</em>. On Windows 11 it is also under <em>Settings → Personalization → Lock screen → Screen saver</em>. Pick <em>Aquarium Screensaver</em> from the drop-down list.</p>
+      </details>
+      <details>
+        <summary>Install by hand (copy the file)</summary>
+        <p>Copy <code>Aquarium.scr</code> to <code>C:\Windows\System32</code> (administrator permission needed). It then appears in the screen saver drop-down list.</p>
+      </details>
+      <details>
+        <summary>Run it from source instead</summary>
+        <pre><code>git clone https://github.com/madkoding/aquarium-screensaver.git
+cd aquarium-screensaver
+python -m pip install -r requirements.txt
+python aquarium_saver.py /s</code></pre>
+        <p>Needs Python 3.10+ on Windows. To build your own <code>Aquarium.scr</code> run <code>.\build.ps1</code> (see the README).</p>
+      </details>
+      <details>
+        <summary>Uninstall</summary>
+        <p>Open the screen saver window again and choose another screen saver (or <em>None</em>). To remove the file, delete <code>Aquarium.scr</code> from the folder you copied it to (usually <code>C:\Windows\System32</code>). Your settings are in <code>%APPDATA%\AquariumScreensaver</code>; delete that folder to reset them.</p>
+      </details>
+    </section>
+
+    <section id="requirements">
+      <h2>Requirements</h2>
+      <table>
+        <tr><th>System</th><td>Windows 10 or 11</td></tr>
+        <tr><th>Graphics</th><td>A GPU with OpenGL 3.3 or newer (any recent NVIDIA, AMD or Intel GPU). A mid-range card is recommended for multiple monitors.</td></tr>
+        <tr><th>If it runs slowly</th><td>In <em>Settings…</em> raise <em>Upscaling</em> to <em>balanced</em> or <em>performance</em>, or lower <em>Quality</em>.</td></tr>
+      </table>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>Made by <a href="https://github.com/madkoding">madkoding</a> · <a href="https://github.com/madkoding/aquarium-screensaver">source code</a> · <a href="https://github.com/madkoding/aquarium-screensaver/issues">report a problem</a></span>
+    <span>Upscaling based on <a href="https://github.com/GPUOpen-Effects/FidelityFX-FSR">AMD FidelityFX Super Resolution 1.0</a> (MIT).</span>
+  </div>
+</footer>
+</body>
+</html>

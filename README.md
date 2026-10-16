@@ -2,6 +2,8 @@
 
 A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. Every fish, coral and rock is generated from code (no model or texture files), schools swim as one continuous world across all your monitors, the lighting follows your clock, and shadows, ambient occlusion, caustics, light shafts, reflections and refractions are ray traced.
 
+**Website and install guide:** https://madkoding.github.io/aquarium-screensaver/
+
 ![Three monitors](docs/screenshot.png)
 
 *Real capture from a 3-monitor setup (a central ultrawide plus two portrait displays).*
