@@ -276,9 +276,16 @@ class FSR:
         self.easu["u_outSize"].value = (float(dst_size[0]), float(dst_size[1]))
         self.vao_easu.render(moderngl.TRIANGLES, vertices=3)
 
+        self.sharpen(mid_tex, dst_fbo, dst_size, sharpness, dither, grain, time)
+
+    def sharpen(self, src_tex, dst_fbo, dst_size, sharpness=0.2, dither=0.0, grain=0.0, time=0.0):
+        """RCAS only: `src_tex` is already at `dst_size` (e.g. a temporal upscaler's output)."""
+        ctx = self.ctx
+        ctx.disable(moderngl.BLEND)
+        ctx.disable(moderngl.DEPTH_TEST)
         dst_fbo.use()
         ctx.viewport = (0, 0, dst_size[0], dst_size[1])
-        mid_tex.use(0)
+        src_tex.use(0)
         self.rcas["u_src"].value = 0
         self.rcas["u_sharp"].value = float(2.0 ** (-sharpness))
         self.rcas["u_dither"].value = float(dither)

@@ -78,27 +78,40 @@ def build_fish():
     parts = []
 
     # Body: i = angle around the axis, j = length
-    na, nt = 20, 30
+    na, nt = 48, 84
     th = np.linspace(0, 2 * np.pi, na + 1)[:, None]
     t = np.linspace(0, 1, nt + 1)[None, :]
     r = _profile(t)
     sin = np.sin(th)
+    cos = np.cos(th)
     y = HALF_H * r * np.where(sin > 0, sin, 0.8 * sin)
-    P = np.stack([0.5 - t + 0 * th, y, HALF_T * r * np.cos(th)], -1)
+    z = HALF_T * r * cos
+    x = 0.5 - t + 0 * th
+    # head: the lower jaw sits back from the snout, the brow rises a little behind it
+    head = np.clip(1.0 - t / 0.30, 0.0, 1.0) ** 1.6
+    x = x - 0.020 * head * np.clip(-sin, 0.0, 1.0)
+    y = y + 0.012 * head * np.clip(sin, 0.0, 1.0) * (1.0 - head)
+    # eyeball bulging out of the head (eye centre at x = 0.375, y = 0.03)
+    de = np.hypot(x - 0.375, y - 0.03)
+    dome = 0.014 * np.sqrt(np.clip(1.0 - (de / 0.036) ** 2, 0.0, 1.0))
+    socket = -0.004 * np.exp(-(((de - 0.052) / 0.012) ** 2))
+    side = np.clip((np.abs(cos) - 0.35) / 0.25, 0.0, 1.0)
+    z = z + np.sign(cos) * (dome + socket) * side
+    P = np.stack([x, y, z], -1)
     uv = np.stack([t + 0 * th, sin + 0 * t], -1)
     parts.append(_fish_part(P, uv, 0, (0, 0, 0)))
 
     # Tail fin: i = vertical -1..1, j = outward 0..1 (forked, widening)
-    u = np.linspace(-1, 1, 11)[:, None]
-    s = np.linspace(0, 1, 7)[None, :]
+    u = np.linspace(-1, 1, 25)[:, None]
+    s = np.linspace(0, 1, 9)[None, :]
     P = np.stack([-0.495 - s * (0.09 + 0.15 * np.abs(u) ** 1.5),
                   u * (0.055 + 0.19 * s ** 0.8), 0 * u + 0 * s], -1)
     uv = np.stack([(u + 1) / 2 + 0 * s, s + 0 * u], -1)
     parts.append(_fish_part(P, uv, 1, (-0.495, 0, 0)))
 
     # Dorsal fin on the back, taller at the front and swept backwards
-    a = np.linspace(0, 1, 9)[:, None]
-    b = np.linspace(0, 1, 4)[None, :]
+    a = np.linspace(0, 1, 22)[:, None]
+    b = np.linspace(0, 1, 6)[None, :]
     x0 = 0.24 - a * 0.52
     ytop = HALF_H * _profile(0.5 - x0) - 0.01
     hgt = 0.13 * (0.45 + 0.55 * (1 - a) ** 1.2)
@@ -114,14 +127,24 @@ def build_fish():
     parts.append(_fish_part(P, uv, 4, (-0.13, -0.12, 0)))
 
     # Pectoral fins, one per side
-    a = np.linspace(0, 1, 4)[:, None]
-    s = np.linspace(0, 1, 5)[None, :]
+    a = np.linspace(0, 1, 8)[:, None]
+    s = np.linspace(0, 1, 9)[None, :]
     for side in (1.0, -1.0):
         P = np.stack([0.18 - a * 0.08 * (1 - 0.5 * s) - s * 0.13,
                       -0.035 - a * 0.03 - s * 0.06 + 0 * a,
                       side * (0.07 + s * 0.11) + 0 * a], -1)
         uv = np.stack([a + 0 * s, s + 0 * a], -1)
         parts.append(_fish_part(P, uv, 3, (0.16, -0.04, side * 0.07)))
+
+    a = np.linspace(0, 1, 6)[:, None]
+    s = np.linspace(0, 1, 7)[None, :]
+    for side in (1.0, -1.0):
+        x0 = 0.13 - a * 0.07
+        ybase = -0.8 * HALF_H * _profile(0.5 - x0) + 0.006
+        P = np.stack([x0 - s * 0.075 * (0.4 + 0.6 * a), ybase - s * 0.085 * (1.0 - 0.35 * a),
+                      side * (0.032 + s * 0.030) + 0 * a], -1)
+        uv = np.stack([a + 0 * s, s + 0 * a], -1)
+        parts.append(_fish_part(P, uv, 4, (0.10, float(-0.8 * HALF_H * _profile(0.40) + 0.006), side * 0.032)))
 
     verts, idx, base = [], [], 0
     for v, i in parts:
@@ -220,7 +243,7 @@ def _sphere_dirs(nth, nph):
                      np.sin(ph) * np.sin(th)], -1)
 
 
-def _tube(pts, radii, col_base, col_tip, sides=7):
+def _tube(pts, radii, col_base, col_tip, sides=14):
     """Tapered tube along a polyline -> (P, N, C) grids of shape (n, sides+1, 3)."""
     n = len(pts)
     T = np.gradient(pts, axis=0)
@@ -299,15 +322,16 @@ def build_seabed(rng, rock_count=22, coral_count=16):
         hw, _, _ = world.view_extent(z0, 3.0)
         x0 = rng.uniform(-hw, hw) * 1.1
         scale = rng.uniform(0.35, 1.5) * (1.0 + 0.04 * -z0)
-        d = _sphere_dirs(49, 33)
+        d = _sphere_dirs(97, 65)
         nn = (noise3(d * 1.9 + k * 7.1, seed=k) * 0.55 + noise3(d * 4.3, seed=k + 9) * 0.18
-              + np.abs(noise3(d * 9.0, seed=k + 21) - 0.5) * 0.14)
+              + np.abs(noise3(d * 9.0, seed=k + 21) - 0.5) * 0.14
+              + np.abs(noise3(d * 21.0, seed=k + 33) - 0.5) * 0.045)
         pts = d * (0.7 + nn)[..., None] * np.array([1.0, 0.62, 0.85]) * scale
         pts[..., 1] = np.maximum(pts[..., 1], -0.25 * scale)
         c = pts + np.array([x0, world.floor_y(x0, z0) + 0.12 * scale, z0])
         tone = np.array([0.34, 0.31, 0.29]) * rng.uniform(0.7, 1.2)
         shade = (0.75 + 0.5 * noise3(d * 6.0, seed=k + 3))[..., None]
-        add(_vrows(c, _normals(c), tone * shade, 1), 49, 33)
+        add(_vrows(c, _normals(c), tone * shade, 1), 97, 65)
         occ.append([x0, world.floor_y(x0, z0) + 0.15 * scale, z0, 1, 0, 0,
                     1.05 * scale, 0.62 * scale, 0.90 * scale, 1, 1.0, *(tone * 1.3)])
 
@@ -331,14 +355,14 @@ def build_seabed(rng, rock_count=22, coral_count=16):
         hw, _, _ = world.view_extent(z0, 3.0)
         x0 = rng.uniform(-hw, hw) * 1.05
         scale = rng.uniform(0.25, 0.75) * (1.0 + 0.04 * -z0)
-        d = _sphere_dirs(41, 27)
+        d = _sphere_dirs(81, 55)
         bumps = noise3(d * 5.5 + k * 3.7, seed=k + 40) * 0.30 + noise3(d * 14.0, seed=k + 70) * 0.10
         pts = d * (0.8 + bumps)[..., None] * np.array([1.0, 0.7, 1.0]) * scale
         pts[..., 1] = np.maximum(pts[..., 1], -0.2 * scale)
         c = pts + np.array([x0, world.floor_y(x0, z0) + 0.1 * scale, z0])
         tone = coral[rng.integers(0, len(coral))]
         polyp = (0.7 + 0.5 * noise3(d * 16.0, seed=k + 5))[..., None]
-        add(_vrows(c, _normals(c), tone * polyp, 2), 41, 27)
+        add(_vrows(c, _normals(c), tone * polyp, 2), 81, 55)
         occ.append([x0, world.floor_y(x0, z0) + 0.12 * scale, z0, 1, 0, 0,
                     1.0 * scale, 0.7 * scale, 1.0 * scale, 1, 1.0, *tone])
 
@@ -419,15 +443,18 @@ def build_seabed(rng, rock_count=22, coral_count=16):
 # ---------------------------------------------------------------- jellyfish
 def build_jelly_bell():
     """Bell: pos(3) normal(3), y up, opening downward, rim curled inward."""
-    th = np.linspace(0, 2 * np.pi, 33)[:, None]
-    ph = np.linspace(0.0, 1.75, 16)[None, :]
+    th = np.linspace(0, 2 * np.pi, 97)[:, None]
+    ph = np.linspace(0.0, 1.75, 40)[None, :]
     rho = np.sin(ph) * (1.0 + 0.10 * np.sin(3 * ph))
-    P = np.stack([rho * np.cos(th), np.cos(ph) * 0.8 + 0 * th, rho * np.sin(th)], -1)
+    rim = np.clip((ph - 1.25) / 0.5, 0.0, 1.0)
+    rho = rho * (1.0 + 0.045 * np.sin(16 * th) * rim)            # scalloped margin
+    y = np.cos(ph) * 0.8 - 0.035 * np.abs(np.sin(8 * th)) * rim
+    P = np.stack([rho * np.cos(th), y + 0 * th, rho * np.sin(th)], -1)
     verts = np.concatenate([P, _normals(P)], -1).reshape(-1, 6)
-    return verts.astype(np.float32), _grid_indices(33, 16).reshape(-1)
+    return verts.astype(np.float32), _grid_indices(97, 40).reshape(-1)
 
 
-def build_jelly_tentacles(count=14, segments=18):
+def build_jelly_tentacles(count=18, segments=28):
     """Hanging ribbons: (u 0..1 down the tentacle, side -1/+1, index k)."""
     rows, idx, base = [], [], 0
     for k in range(count):

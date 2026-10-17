@@ -22,6 +22,11 @@ WGRID_W, WGRID_H = 42, 25
 WK = 14
 
 # Caustic map: where refracted sunlight lands on the sea floor plane
+# irradiance probe grid (ambient cube per probe)
+GI_ORIGIN = (-28.0, -2.4, -36.0)
+GI_STEP = (1.5, 1.1, 1.5)
+GI_DIM = (38, 6, 30)
+
 MAP_ORIGIN = (-32.0, -22.0)
 MAP_SIZE = (64.0, 30.0)
 MAP_RES = (2560, 1200)         # ~2.5 cm per texel: caustic lines are thin

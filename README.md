@@ -25,18 +25,19 @@ A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. 
 ## Features
 
 **Fish and behavior**
-- **Fully procedural 3D fish:** one parametric mesh (lofted body, forked tail, dorsal, anal and pectoral fins) animated in the vertex shader with a wave that travels from head to tail. Species differ only by parameters: proportions, fin sizes, colors and skin pattern.
+- **Fully procedural 3D fish:** one parametric mesh (lofted body with a shaped head and bulging eyes, forked tail, dorsal, anal, pelvic and pectoral fins) animated in the vertex shader with a wave that travels from head to tail. Species differ only by parameters: proportions, fin sizes, colors and skin pattern.
 - **Eight species:** neon tetras, clownfish, blue tangs, angelfish, discus, lionfish, tuna, and an occasional shark patrolling the far water. Everyone else flees when the shark gets close.
 - **Schooling:** every school follows a roaming waypoint and its members apply boid rules (cohesion, alignment, separation) with soft tank bounds.
-- **Detailed skin:** translucent fins with rays that glow when the sun shines through them, bump-mapped scales, subsurface scattering on thin edges, thin-film iridescence, gills, mouths and glossy wet eyes.
+- **Detailed skin:** individual overlapping scales (they fade out with distance instead of shimmering), a dotted lateral line, gill covers, markings with organic wobbly edges, translucent fins with forking rays and ragged edges that glow when the sun shines through them, subsurface scattering on thin edges, thin-film iridescence, environment reflections on the wet skin and glossy eyes with a radial iris and a domed lens.
 
 **The reef**
-- **Procedural seabed:** layered rocks with moss and cracks, sand with grain and ripples, hundreds of pebbles, branching (staghorn) and table corals, lattice sea fans, anemones with glowing tentacles, seagrass, kelp forests that cast soft shadows, translucent pulsing jellyfish, bubble streams and drifting marine snow that sparkles inside the light shafts.
+- **Procedural seabed:** layered rocks with mineral bands, cracks, barnacles and moss, sand with grain and ripples, hundreds of pebbles, brain corals with meandering grooves, branching (staghorn) corals with polyps and growth rings, table corals, lattice sea fans, anemones with round, pale-tipped tentacles, seagrass and kelp blades with midribs, veins and light shining through them, kelp forests that cast soft shadows, translucent pulsing jellyfish (scalloped margin, radial canals, gonads and frilly oral arms), bubble streams and drifting marine snow that sparkles inside the light shafts.
 
 **Ray-traced lighting (hybrid)** — the scene is rasterized and these effects are traced per pixel in shaders (no RT cores needed, so it runs on any OpenGL 3.3 GPU):
 - **Soft shadows** from fish, jellyfish, rocks, coral and kelp, using shadow rays against ellipsoid occluders and a sun-space grid as the acceleration structure.
 - **Ambient occlusion:** one random hemisphere ray per pixel per frame, averaged over time.
 - **Bounced light:** the sunlit sand lights the undersides of rocks, coral and fish.
+- **Indirect light from an irradiance probe grid:** 38x6x30 probes, each holding an ambient cube refreshed every frame with two traced rays per direction against the occluders and the sea floor, then blended over time. Surfaces read it back with trilinear interpolation, and only the difference to open water is applied, so open water is unchanged while the lee of rocks darkens and coral tints nearby fish (`gi`).
 - **Physical caustics:** sun rays are refracted (Snell's law) through an animated water surface and focused onto the sand.
 - **Volumetric light shafts** that pick up the caustics and the shadows of fish and rocks.
 - **The water surface seen from below:** total internal reflection mirrors the sea floor, rocks and fish, with Snell's window showing the sky when you look steeply up.
@@ -44,7 +45,8 @@ A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. 
 
 **Camera and image**
 - **Depth of field** (with slow focus breathing), subtle chromatic aberration and film grain, bloom, vignette, MSAA, temporal anti-aliasing and de-banding dither.
-- **AMD FSR 1.0 upscaling** (on by default at *quality*): a GLSL port of AMD's EASU + RCAS that renders at fewer pixels and upscales, which pays for all the effects above.
+- **AMD FSR 1.0 upscaling** (on by default at *quality*): a GLSL port of AMD's EASU + RCAS that renders at fewer pixels and upscales, which pays for all the effects above. An experimental temporal upscaler is available as `upscaler: "temporal"`.
+- **Photographic look** (`realism`, 0.7 by default): a filmic tone curve, a slight desaturation with cool shadows and warm highlights, and murkier water that absorbs red faster.
 - Day, dusk and night lighting that follows your clock (at night the neon tetras glow).
 
 **System**
@@ -71,7 +73,10 @@ Open **Settings...** in the screensaver picker. Values are stored in `%APPDATA%\
 | `light` | `auto` (follows your clock), `day`, `dusk` or `night`. |
 | `quality` | `low` (no MSAA, 75% resolution), `medium` (2x MSAA), `high` (4x MSAA). |
 | `upscaling` | AMD FSR 1.0: `off`, `quality` (1.5x, default), `balanced` (1.7x) or `performance` (2x). |
+| `upscaler` | `fsr1` (default, spatial AMD FSR 1.0) or `temporal` (experimental: jittered frames, motion vectors and an accumulated history). Measured against a native MSAA reference it only ties FSR 1 at 2x and loses at 1.5x. |
 | `sharpness` | FSR sharpening in stops: 0 is sharpest, 2 softest (AMD's default is 0.2). |
+| `realism` | 0 to 1: photographic look (filmic curve, grade, murkier water). |
+| `gi` | 0 to 1: strength of the probe-grid indirect light (needs `raytracing`). |
 | `fish` / `fish_scale` | Number of fish (5 to 200) and a size multiplier. |
 | `jellyfish` | Number of jellyfish (0 to 8). |
 | `shark` | Let an occasional shark patrol the far water. |
@@ -130,12 +135,13 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 | File | Role |
 |---|---|
 | `aquarium_saver.py` | Entry point: argument parsing (`/s`, `/c`, `/p`), main loop, frame pacing, hot-plug and battery handling. |
-| `renderer.py` | OpenGL pipeline: caustics, mirror, scene (MSAA), refraction copy, volume, TAA, depth of field, bloom, final composite and FSR. |
+| `renderer.py` | OpenGL pipeline: caustics, mirror, probe-grid update, scene (MSAA), velocity, refraction copy, volume, TAA, depth of field, bloom, final composite and upscaling. |
 | `shaders.py` | All GLSL: fish animation and skin, materials, shadow rays, AO, caustic tracing, mirror and volume passes, refraction, TAA, depth of field. |
 | `meshes.py` | Procedural geometry: fish, kelp and seagrass, rocks, pebbles, corals, sea fans, anemones, seabed, jellyfish. |
 | `sim.py` | Species table, boid schooling, shark patrol and flee behavior, jellyfish motion. |
 | `rt.py` | Ray-tracing data: ellipsoid occluder texture, sun-space shadow grid, world-space AO grid, caustic map layout. |
-| `fsr.py` | Standalone, reusable AMD FSR 1.0 (EASU + RCAS) for moderngl: `FSR(ctx).upscale(src_tex, src_size, dst_fbo, dst_size, sharpness)`. |
+| `fsr.py` | Standalone, reusable AMD FSR 1.0 (EASU + RCAS) for moderngl: `FSR(ctx).upscale(src_tex, src_size, dst_fbo, dst_size, sharpness)`, plus `sharpen(...)` for RCAS alone. |
+| `taau.py` | Experimental temporal upscaler: jittered low-resolution frame + velocity buffer + full-resolution history. |
 | `world.py` | Camera, projection and the seabed height function shared by the CPU and the shaders. |
 | `settings.py` / `config_dialog.py` | Defaults, JSON persistence and the Tk settings window. |
 | `winapi.py` | Monitors with per-monitor DPI, refresh rate, power status, single instance, preview embedding. |
@@ -145,7 +151,7 @@ Example: `python aquarium_saver.py /s --seconds 6 --at 25 --shot capture.png`
 - **Shadow rays:** occluders live in a float texture. Projecting every point along the light direction onto a plane makes all points of one sun ray land in the same grid cell, so each shadow ray only tests the few ellipsoids of its own cell, after a bounding-sphere rejection.
 - **Ambient occlusion:** one cosine-weighted ray per pixel per frame against a world-space grid; the ray is shorter than a cell, so it only visits two cells. TAA averages the frames.
 - **Caustics:** a dense grid on the water surface refracts one sun ray per vertex down to the sea floor. The vertex shader computes the Jacobian of that surface-to-floor mapping; its inverse is the energy per area, accumulated additively into a texture that the floor, seaweed, fish and light shafts all sample.
-- **TAA without velocity buffers:** sub-pixel jitter, camera reprojection from the distance stored in the scene's alpha channel (which the volume and depth-of-field passes also use, so there is no extra depth pass), and a variance clamp that rejects ghosts on moving fish.
+- **TAA with a velocity pass for the fish:** sub-pixel jitter, camera reprojection from the distance stored in the scene's alpha channel (which the volume and depth-of-field passes also use), a separate pass that draws the fish with last frame's pose and stores where each pixel was on screen, and a variance clamp that rejects the remaining ghosts.
 - **Sharpness:** the caustic map is 2560x1200 (about 2.5 cm per texel) fed by a 0.09 mesh, lookups use a slight mip blur so thin focus lines stay smooth up close, and the water-surface mirror is traced at reduced resolution with distance-filtered waves so it doesn't alias.
 - The simulation costs about 2 ms per frame for 60 fish; everything else runs on the GPU.
 

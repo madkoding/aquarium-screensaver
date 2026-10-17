@@ -31,6 +31,9 @@ DEFAULTS = {
     "camera_drift": True,     # slow, subtle camera sway
     "raytracing": True,       # traced shadows, caustics, light shafts, water mirror
     "upscaling": "quality",   # off | quality (1.5x) | balanced (1.7x) | performance (2x), AMD FSR 1.0
+    "realism": 0.7,           # 0..1 photographic look: filmic curve, grade, murkier water
+    "gi": 0.8,                # 0..1 indirect light from an irradiance probe grid (needs raytracing)
+    "upscaler": "fsr1",       # fsr1 (spatial AMD FSR 1.0) | temporal (experimental: jittered, motion-vector based)
     "sharpness": 0.2,         # 0..2 FSR sharpening in stops (0 = sharpest, AMD default 0.2)
     "dof": 0.45,              # 0..1 depth of field strength
     "lens": 0.35,             # 0..1 chromatic aberration and film grain
@@ -39,12 +42,13 @@ DEFAULTS = {
 RANGES = {
     "fish": (5, 200), "fish_scale": (0.6, 3.0), "jellyfish": (0, 8),
     "bloom": (0.0, 1.0), "vignette": (0.0, 1.0), "sharpness": (0.0, 2.0),
-    "dof": (0.0, 1.0), "lens": (0.0, 1.0),
+    "dof": (0.0, 1.0), "lens": (0.0, 1.0), "gi": (0.0, 1.0), "realism": (0.0, 1.0),
 }
 CHOICES = {
     "water": list(WATER), "quality": list(QUALITY),
     "light": ["auto", "day", "dusk", "night"],
     "upscaling": list(UPSCALE_RATIO),
+    "upscaler": ["fsr1", "temporal"],
 }
 
 

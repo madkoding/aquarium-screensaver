@@ -8,7 +8,8 @@ CHOICES = [  # (key, label)
     ("water", "Water color"),
     ("light", "Lighting (auto follows your clock)"),
     ("quality", "Quality"),
-    ("upscaling", "Upscaling (AMD FSR 1.0)"),
+    ("upscaling", "Upscaling (render at lower resolution)"),
+    ("upscaler", "Upscaler (fsr1 = AMD FSR 1.0, temporal = experimental)"),
 ]
 SLIDERS = [  # (key, label, from, to, decimals)
     ("fish", "Number of fish", 5, 200, 0),
@@ -18,6 +19,8 @@ SLIDERS = [  # (key, label, from, to, decimals)
     ("vignette", "Vignette", 0.0, 1.0, 2),
     ("dof", "Depth of field", 0.0, 1.0, 2),
     ("lens", "Lens fringing and film grain", 0.0, 1.0, 2),
+    ("realism", "Photographic look (filmic grade)", 0.0, 1.0, 2),
+    ("gi", "Indirect light (probe grid)", 0.0, 1.0, 2),
     ("sharpness", "FSR sharpening (0 = sharpest)", 0.0, 2.0, 2),
 ]
 CHECKS = [
