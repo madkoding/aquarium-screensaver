@@ -24,6 +24,7 @@ import rt
 import shaders as S
 import world
 from fsr import FSR
+from taau import TemporalUpscaler
 from settings import QUALITY, UPSCALE_RATIO, WATER
 from sim import INST_FLOATS, Sim
 
@@ -34,7 +35,7 @@ RT_QUALITY = {   # volume downscale, ray-march steps, mirror downscale
     "medium": dict(vol_div=3, steps=20, mirror_div=2.0),
     "high": dict(vol_div=2, steps=28, mirror_div=1.5),
 }
-U_GRID, U_OCC, U_CAUS, U_MIRROR, U_SCENE, U_REFR, U_WGRID = 3, 4, 5, 6, 7, 8, 9   # texture units
+U_GRID, U_OCC, U_CAUS, U_MIRROR, U_SCENE, U_REFR, U_WGRID, U_GI = 3, 4, 5, 6, 7, 8, 9, 10   # texture units
 
 
 def _halton(i, base):
@@ -69,6 +70,8 @@ class AquariumRenderer:
         self.samples = samples
         ratio = UPSCALE_RATIO[cfg["upscaling"]]
         self.fsr = FSR(c) if ratio > 1.0 else None     # render fewer pixels, upscale with FSR
+        self.taau = TemporalUpscaler(c) if self.fsr and cfg.get("upscaler") == "temporal" else None
+        self.jitter_on = bool(cfg["taa"] or self.taau)
         scale /= ratio
         sw, sh = max(2, int(vw * scale)), max(2, int(vh * scale))
         self.scene_size = (sw, sh)
@@ -111,6 +114,10 @@ class AquariumRenderer:
             blit=prog(S.FULLSCREEN_VS, S.BLIT_FS),
             dof=prog(S.FULLSCREEN_VS, S.DOF_FS),
             taa=prog(S.FULLSCREEN_VS, S.TAA_FS),
+            gi=prog(S.FULLSCREEN_VS, S.GI_UPDATE_FS),
+            velfish=prog(S.FISH_VEL_VS, S.FISH_VEL_FS),
+            velfloor=prog(S.FLOOR_VS, S.VEL_CLEAR_FS),
+            velkelp=prog(S.KELP_VS, S.VEL_CLEAR_FS),
         )
 
     def _build_geometry(self, rng):
@@ -122,9 +129,10 @@ class AquariumRenderer:
         foliage = np.concatenate([kelp, meshes.build_seagrass_instances(rng),
                                   meshes.build_anemone_instances(rng, anemones)])
         self.occ = rt.OccluderSet(np.concatenate([static_occ, kelp_occ]))   # kelp forests shade too
+        floor_vbo, floor_ibo = buf(v), buf(i)
         self.vao_floor = c.vertex_array(
-            p["floor"], [(buf(v), "3f 3f 3f 1f 2f", "in_pos", "in_nrm", "in_col", "in_mat", "in_uv")],
-            index_buffer=buf(i))
+            p["floor"], [(floor_vbo, "3f 3f 3f 1f 2f", "in_pos", "in_nrm", "in_col", "in_mat", "in_uv")],
+            index_buffer=floor_ibo)
 
         v, body_i, fin_i = meshes.build_fish()
         fish_vbo = buf(v)
@@ -140,13 +148,35 @@ class AquariumRenderer:
         self.vao_fish = fish_vao(p["fish"], body_i)       # opaque body
         self.vao_fins = fish_vao(p["fins"], fin_i)        # translucent fins
 
+        # last frame's pose (pos3, fwd3, phase, bend) for the velocity pass
+        self.fish_prev = c.buffer(reserve=max(1, self.sim.N) * 8 * 4, dynamic=True)
+        self._fish_prev_data = None
+        fish_fields = [("in_pos", 12), ("in_nrm", 12), ("in_uv", 8), ("in_part", 4), ("in_pivot", 12)]
+        inst_fields = [("i_pos", 12), ("i_fwd", 12), ("i_size", 16), ("i_fin", 16), ("i_anim", 16),
+                       ("i_c1", 12), ("i_c2", 12), ("i_c3", 12)]
+        prev_fields = [("p_pos", 12), ("p_fwd", 12), ("p_anim", 8)]
+        self.vao_velfish = self._vao(p["velfish"], [
+            (fish_vbo, fish_fields, False), (self.fish_inst, inst_fields, True),
+            (self.fish_prev, prev_fields, True)], buf(body_i))
+        self.vao_velfins = self._vao(p["velfish"], [
+            (fish_vbo, fish_fields, False), (self.fish_inst, inst_fields, True),
+            (self.fish_prev, prev_fields, True)], buf(fin_i))
+        self.vao_velfloor = self._vao(p["velfloor"], [
+            (floor_vbo, [("in_pos", 12), ("in_nrm", 12), ("in_col", 12), ("in_mat", 4), ("in_uv", 8)],
+             False)], floor_ibo)
+
         v, i = meshes.build_ribbon()
         self.n_kelp = len(foliage)
+        ribbon_vbo, ribbon_ibo, foliage_vbo = buf(v), buf(i), buf(foliage)
         self.vao_kelp = c.vertex_array(
             p["kelp"],
-            [(buf(v), "2f", "in_uv"),
-             (buf(foliage), "3f 4f 3f 1f/i", "i_base", "i_dim", "i_col", "i_kind")],
-            index_buffer=buf(i))
+            [(ribbon_vbo, "2f", "in_uv"),
+             (foliage_vbo, "3f 4f 3f 1f/i", "i_base", "i_dim", "i_col", "i_kind")],
+            index_buffer=ribbon_ibo)
+        self.vao_velkelp = self._vao(p["velkelp"], [
+            (ribbon_vbo, [("in_uv", 8)], False),
+            (foliage_vbo, [("i_base", 12), ("i_dim", 16), ("i_col", 12), ("i_kind", 4)], True)],
+            ribbon_ibo)
 
         self.jelly_inst = c.buffer(reserve=MAX_JELLY * 8 * 4, dynamic=True)
         jinst = (self.jelly_inst, "3f 1f 1f 3f/i", "i_pos", "i_size", "i_phase", "i_col")
@@ -163,10 +193,27 @@ class AquariumRenderer:
 
         self.vao_empty = {k: c.vertex_array(p[k], []) for k in
                           ("bg", "rays", "down", "blur", "final", "bubble", "snow",
-                           "mirror", "vol", "blit", "dof", "taa")}
+                           "mirror", "vol", "blit", "dof", "taa", "gi")}
         quality = self.cfg["quality"]
         self.n_bubbles = BUBBLE_SOURCES * {"low": 14, "medium": 22, "high": 30}[quality]
         self.n_snow = {"low": 250, "medium": 500, "high": 800}[quality]
+
+    def _vao(self, program, parts, index_buffer=None):
+        """Vertex array over interleaved buffers; parts = [(buffer, [(attr, nbytes)], per_instance)].
+        Attributes the compiler dropped from this program become padding, so one buffer
+        layout can feed both the full shader and a stripped-down one."""
+        content = []
+        for buffer, fields, instanced in parts:
+            toks, names = [], []
+            for name, nbytes in fields:
+                if name in program:
+                    toks.append(f"{nbytes // 4}f")
+                    names.append(name)
+                else:
+                    toks.append(f"{nbytes}x")
+            if names:
+                content.append((buffer, " ".join(toks) + ("/i" if instanced else ""), *names))
+        return self.ctx.vertex_array(program, content, index_buffer=index_buffer)
 
     def _build_targets(self):
         c = self.ctx
@@ -194,6 +241,11 @@ class AquariumRenderer:
         self.refr_tex, self.refr_fbo = tex(sw, sh)       # opaque scene, for refraction
         self.post_tex, self.post_fbo = tex(sw, sh)       # tone-mapped frame fed to FSR
         self.dof_tex, self.dof_fbo = tex(sw, sh)         # depth-of-field result
+        self.vel_tex = c.texture((sw, sh), 4, dtype="f2")   # previous screen uv of moving objects
+        self.vel_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.vel_tex.repeat_x = self.vel_tex.repeat_y = False
+        self.vel_fbo = c.framebuffer(color_attachments=[self.vel_tex],
+                                     depth_attachment=c.depth_renderbuffer((sw, sh)))
         self.taa = [tex(sw, sh), tex(sw, sh)]            # ping-pong history for TAA
         self._taa_i, self._frame_idx, self._prev_vp = 0, 0, None
         self.q = [tex(sw // 4, sh // 4), tex(sw // 4, sh // 4),
@@ -214,6 +266,14 @@ class AquariumRenderer:
         self.caus_tex.repeat_x = self.caus_tex.repeat_y = False
         self.caus_fbo = c.framebuffer(color_attachments=[self.caus_tex])
         md, vd = self.rtq["mirror_div"], self.rtq["vol_div"]
+        nx, ny, nz = rt.GI_DIM                              # irradiance probe atlas, ping-pong
+        self.gi = []
+        for _ in range(2):
+            t = c.texture((nx * 6, ny * nz), 4, dtype="f2")
+            t.filter = (nearest, nearest)
+            t.repeat_x = t.repeat_y = False
+            self.gi.append((t, c.framebuffer(color_attachments=[t])))
+        self._gi_i, self._gi_first = 0, True
         self.mir_tex, self.mir_fbo = tex(int(sw / md), int(sh / md))
         self.vol_tex, self.vol_fbo = tex(sw // vd, sh // vd)
 
@@ -267,8 +327,9 @@ class AquariumRenderer:
         sw, sh = self.scene_size
         inv_vp = np.linalg.inv(self.proj @ view)        # un-jittered: used for ray reconstruction
         proj_j = self.proj.copy()
-        if self.cfg["taa"]:                              # sub-pixel jitter for the raster passes
-            jx, jy = JITTER[self._frame_idx % len(JITTER)]
+        jx, jy = JITTER[self._frame_idx % len(JITTER)] if self.jitter_on else (0.0, 0.0)
+        self._jit = (jx, jy)
+        if self.jitter_on:                               # sub-pixel jitter for the raster passes
             proj_j[0, 2] += 2.0 * jx / sw
             proj_j[1, 2] += 2.0 * jy / sh
         tup = lambda a: tuple(float(v) for v in a)
@@ -284,6 +345,7 @@ class AquariumRenderer:
             s(prog, "u_waterTop", tup(env["top"]))
             s(prog, "u_waterBot", tup(env["bot"]))
             s(prog, "u_fog", 0.055)
+            s(prog, "u_photo", float(self.cfg["realism"]))
             s(prog, "u_floor", float(world.FLOOR_Y))
             s(prog, "u_surf", float(world.SURFACE_Y))
             s(prog, "u_rays", float(0.20 * env["day"] + 0.03))
@@ -304,6 +366,11 @@ class AquariumRenderer:
             s(prog, "u_wgridDim", (rt.WGRID_W, rt.WGRID_H))
             s(prog, "u_frame", float(self._frame_idx % 4096))
             s(prog, "u_wgrid", U_WGRID)
+            s(prog, "u_giTex", U_GI)
+            s(prog, "u_giOrigin", rt.GI_ORIGIN)
+            s(prog, "u_giStep", rt.GI_STEP)
+            s(prog, "u_giDim", rt.GI_DIM)
+            s(prog, "u_gi", float(self.cfg["gi"]) if self.rt_on else 0.0)
             for name, unit in (("u_grid", U_GRID), ("u_occ", U_OCC), ("u_caus", U_CAUS),
                                ("u_mirror", U_MIRROR), ("u_scene", U_SCENE),
                                ("u_refrTex", U_REFR)):
@@ -317,6 +384,7 @@ class AquariumRenderer:
         self.occ_tex.use(U_OCC)
         self.caus_tex.use(U_CAUS)
         self.wgrid_tex.use(U_WGRID)
+        self.gi[self._gi_i][0].use(U_GI)
 
     def render(self, t, dt, frame):
         ctx = self.ctx
@@ -335,7 +403,11 @@ class AquariumRenderer:
             self._refr = rt.refracted_down(env["sun_dir"])
         self._uniforms(t, env, eye, view)
 
-        self.fish_inst.write(sim.fish_instances().tobytes())
+        inst = sim.fish_instances()
+        pose = np.ascontiguousarray(np.concatenate([inst[:, 0:6], inst[:, 14:16]], axis=1), dtype="f4")
+        self.fish_prev.write((pose if self._fish_prev_data is None else self._fish_prev_data).tobytes())
+        self._fish_prev_data = pose
+        self.fish_inst.write(inst.tobytes())
         if sim.J:
             self.jelly_inst.write(sim.jelly_instances().tobytes())
 
@@ -345,6 +417,8 @@ class AquariumRenderer:
         if self.rt_on:
             self._caustic_pass()
             self._mirror_pass()
+            if self.cfg["gi"] > 0.0:
+                self._gi_pass()
 
         fbo = self.render_fbo
         fbo.use()
@@ -387,7 +461,9 @@ class AquariumRenderer:
             self._volume_pass()
 
         src = self.scene_tex
-        if self.cfg["taa"]:
+        if self.jitter_on:
+            self._velocity_pass(view)
+        if self.cfg["taa"] and not self.taau:            # the temporal upscaler does its own accumulation
             src = self._taa_pass(eye, view)
         if self.cfg["dof"] > 0.02:
             src = self._dof_pass(t, src)
@@ -417,7 +493,15 @@ class AquariumRenderer:
         self._set(f, "u_ca", lens)
         self._set(f, "u_grain", 0.0 if self.fsr else lens)
         self.vao_empty["final"].render(moderngl.TRIANGLES, vertices=3)
-        if self.fsr:
+        if self.taau:
+            cur_vp = self.proj @ view
+            tex = self.taau.resolve(self.post_tex, self.scene_tex, self.vel_tex, (sw, sh), (vw, vh),
+                                    self._jit, np.linalg.inv(cur_vp),
+                                    cur_vp if self._prev_vp is None else self._prev_vp, eye)
+            self._prev_vp = cur_vp
+            self.fsr.sharpen(tex, ctx.screen, (vw, vh), sharpness=float(self.cfg["sharpness"]),
+                             dither=1.0, grain=lens, time=t)
+        elif self.fsr:
             self.fsr.upscale(self.post_tex, (sw, sh), ctx.screen, (vw, vh),
                              sharpness=float(self.cfg["sharpness"]), dither=1.0,
                              grain=lens, time=t)
@@ -434,6 +518,18 @@ class AquariumRenderer:
         self.vao_caustic.render(moderngl.TRIANGLES)
         ctx.disable(moderngl.BLEND)
         self.caus_tex.build_mipmaps()
+
+    def _gi_pass(self):
+        """Refresh the irradiance probes: read the history, write the other texture, swap."""
+        ctx = self.ctx
+        self._bind_rt()                                  # binds the current atlas at U_GI as history
+        out_tex, out_fbo = self.gi[1 - self._gi_i]
+        out_fbo.use()
+        ctx.viewport = (0, 0, *out_tex.size)
+        self._set(self.p["gi"], "u_first", 1.0 if self._gi_first else 0.0)
+        self.vao_empty["gi"].render(moderngl.TRIANGLES, vertices=3)
+        self._gi_i = 1 - self._gi_i
+        self._gi_first = False
 
     def _mirror_pass(self):
         ctx = self.ctx
@@ -466,6 +562,22 @@ class AquariumRenderer:
         self.vao_empty["blit"].render(moderngl.TRIANGLES, vertices=3)
         ctx.disable(moderngl.BLEND)
 
+    def _velocity_pass(self, view):
+        """Where each pixel of a swimming fish was on screen last frame."""
+        ctx = self.ctx
+        sw, sh = self.scene_size
+        self.vel_fbo.use()
+        ctx.viewport = (0, 0, sw, sh)
+        self.vel_fbo.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
+        ctx.enable(moderngl.DEPTH_TEST)
+        cur_vp = self.proj @ view
+        self._mat(self.p["velfish"], "u_prevVP", cur_vp if self._prev_vp is None else self._prev_vp)
+        self.vao_velfloor.render(moderngl.TRIANGLES)             # static occluders: depth only
+        self.vao_velkelp.render(moderngl.TRIANGLES, instances=self.n_kelp)
+        self.vao_velfish.render(moderngl.TRIANGLES, instances=self.sim.N)
+        self.vao_velfins.render(moderngl.TRIANGLES, instances=self.sim.N)
+        ctx.disable(moderngl.DEPTH_TEST)
+
     def _taa_pass(self, eye, view):
         """Temporal anti-aliasing / accumulation on the resolved HDR scene."""
         ctx = self.ctx
@@ -479,6 +591,8 @@ class AquariumRenderer:
         p = self.p["taa"]
         self._set(p, "u_cur", 0)
         self._set(p, "u_hist", 1)
+        self.vel_tex.use(2)
+        self._set(p, "u_vel", 2)
         cur_vp = self.proj @ view
         self._mat(p, "u_prevVP", cur_vp if self._prev_vp is None else self._prev_vp)
         self._set(p, "u_first", 1.0 if self._prev_vp is None else 0.0)

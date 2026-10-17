@@ -47,6 +47,7 @@ uniform float u_day;       // 0 night .. 1 day
 uniform vec3 u_waterTop;
 uniform vec3 u_waterBot;
 uniform float u_fog;
+uniform float u_photo;              // 0..1 photographic look: water absorption, grade, filmic curve
 
 vec3 bg_color(vec2 uv) {
     return mix(u_waterBot, u_waterTop, pow(clamp(uv.y, 0.0, 1.0), 1.5));
@@ -78,22 +79,26 @@ float caustics(vec2 uv, float time) {
 // Distance fog: absorbs red first, then dissolves into the background colour.
 vec3 apply_fog(vec3 col, vec3 world, vec2 fragUV) {
     float dist = length(u_camPos - world);
-    vec3 absorb = exp(-vec3(0.10, 0.04, 0.015) * dist * 0.30);
-    float f = 1.0 - exp(-dist * u_fog);
-    return mix(col * absorb, bg_color(fragUV), f);
+    vec3 absorb = exp(-vec3(0.10, 0.04, 0.015) * dist * 0.30 * (1.0 + 1.1 * u_photo));
+    float f = 1.0 - exp(-dist * u_fog * (1.0 + 0.18 * u_photo));
+    vec3 haze = bg_color(fragUV);
+    haze = mix(haze, vec3(dot(haze, vec3(0.30, 0.59, 0.11))) * vec3(0.80, 1.00, 0.97), 0.30 * u_photo);   // murkier, a touch green
+    return mix(col * absorb, haze, f);
 }
 
-vec3 ambient(vec3 N) {
+vec3 amb_t(float t) {
     vec3 up = vec3(0.16, 0.34, 0.50) * (0.40 + 0.60 * u_day);
     vec3 down = vec3(0.03, 0.07, 0.10) * (0.55 + 0.45 * u_day);
-    return mix(down, up, N.y * 0.5 + 0.5);
+    return mix(down, up, t);
 }
+vec3 ambient(vec3 N) { return amb_t(N.y * 0.5 + 0.5); }
 """
 
 # Ray-tracing helpers (appended to COMMON): ellipsoid occluders, sun-space grid
 # shadows and the refraction-based caustic map.
 RT_COMMON = """
 uniform float u_rt;                 // 1 = ray-traced effects on
+uniform float u_gi;                 // probe-grid indirect light strength, 0 = off
 uniform sampler2D u_grid;           // occluder ids per sun-space cell (R32F)
 uniform sampler2D u_occ;            // occluder ellipsoids (RGBA32F, 4 rows)
 uniform sampler2D u_caus;           // caustic flux on the sea floor plane (R16F)
@@ -258,11 +263,56 @@ vec3 bounce_light(vec3 N, vec3 p) {
     float f = exp(-h * 0.65) * (0.5 - 0.5 * N.y);
     vec3 sandP = vec3(p.x, fh, p.z);
     float flux = (u_rt > 0.5) ? mix(0.7, 1.0, clamp(rt_flux(sandP, 2.0) * 0.5, 0.0, 1.5)) : 1.0;
-    return vec3(0.80, 0.72, 0.52) * u_sunCol * sun_atten(sandP) * 0.30 * f * flux;
+    return vec3(0.80, 0.72, 0.52) * u_sunCol * sun_atten(sandP) * 0.30 * f * flux * (1.0 - 0.7 * u_gi);
 }
 """
 
 COMMON = COMMON + RT_COMMON
+
+# Irradiance probe grid: an "ambient cube" (6 axis directions) per probe, refreshed every
+# frame with two traced rays per direction and blended over time. Surfaces read it back
+# with trilinear interpolation. Only the DIFFERENCE to what open water would give is applied,
+# so open water looks as before while the lee of rocks darkens and coral/sand tint nearby fish.
+GI_COMMON = """
+uniform sampler2D u_giTex;          // atlas: x = dir * NX + ix, y = iz * NY + iy (RGBA16F)
+uniform vec3 u_giOrigin;
+uniform vec3 u_giStep;
+uniform ivec3 u_giDim;
+
+vec3 gi_fetch(int d, ivec3 i) {
+    return texelFetch(u_giTex, ivec2(d * u_giDim.x + i.x, i.z * u_giDim.y + i.y), 0).rgb;
+}
+
+vec3 gi_cube(vec3 p, vec3 N) {
+    vec3 g = clamp((p - u_giOrigin) / u_giStep, vec3(0.0), vec3(u_giDim - 1));
+    ivec3 i0 = ivec3(floor(g));
+    vec3 f = g - vec3(i0);
+    ivec3 i1 = min(i0 + 1, u_giDim - 1);
+    vec3 w = N * N;
+    int dx = N.x >= 0.0 ? 0 : 1;
+    int dy = N.y >= 0.0 ? 2 : 3;
+    int dz = N.z >= 0.0 ? 4 : 5;
+    vec3 acc = vec3(0.0);
+    for (int c = 0; c < 8; c++) {
+        bool bx = (c & 1) != 0, by = (c & 2) != 0, bz = (c & 4) != 0;
+        ivec3 i = ivec3(bx ? i1.x : i0.x, by ? i1.y : i0.y, bz ? i1.z : i0.z);
+        float t = (bx ? f.x : 1.0 - f.x) * (by ? f.y : 1.0 - f.y) * (bz ? f.z : 1.0 - f.z);
+        acc += t * (w.x * gi_fetch(dx, i) + w.y * gi_fetch(dy, i) + w.z * gi_fetch(dz, i));
+    }
+    return acc;
+}
+
+// Indirect light arriving at p for a surface facing N.
+vec3 irr(vec3 N, vec3 p) {
+    if (u_gi < 0.001 || u_rt < 0.5) return ambient(N);
+    vec3 w = N * N;
+    // what the probes hold in open water: cosine-weighted mean of ambient() over each face's hemisphere
+    vec3 base = (w.x + w.z) * amb_t(0.5) + w.y * amb_t(0.5 + (N.y >= 0.0 ? 1.0 : -1.0) / 3.0);
+    return max(ambient(N) + (gi_cube(p, N) - base) * u_gi, vec3(0.0));
+}
+"""
+
+COMMON = COMMON + GI_COMMON
 
 # Screen-space refraction: transparent objects sample a copy of the opaque
 # scene through an offset, with a little chromatic dispersion.
@@ -398,12 +448,39 @@ void main() {
         float n = fbm3(v_world * 2.4);
         float strata = 0.5 + 0.5 * sin(v_world.y * 16.0 + n * 5.0);
         albedo *= (0.62 + 0.55 * n) * (0.9 + 0.2 * strata);
+        albedo = mix(albedo, albedo * vec3(1.18, 1.0, 0.82), smoothstep(0.55, 0.95, strata) * 0.45);   // warm mineral bands
+        float crack = smoothstep(0.022, 0.0, abs(fbm3(v_world * 3.1 + 11.0) - 0.5)) * near;
+        albedo *= 1.0 - 0.38 * crack;
+        vec3 bq = v_world * 46.0;
+        float barn = step(0.975, vhash(floor(bq))) * smoothstep(0.42, 0.22, length(fract(bq) - 0.5))
+                   * smoothstep(0.1, 0.4, N.y + 0.3) * near;
+        albedo = mix(albedo, vec3(0.74, 0.72, 0.64), barn * 0.65);                                  // barnacles
+        gloss = 0.14;                                                                               // wet rock
         float moss = smoothstep(0.55, 0.9, N.y) * smoothstep(0.45, 0.7, fbm3(v_world * 5.0 + 3.0));
         albedo = mix(albedo, vec3(0.16, 0.32, 0.10), moss * 0.7);
         if (near > 0.10) N = bump_normal(N, v_world * 5.0, 0.7 * near);
     } else if (mat == 3) {                             // pebbles: smooth and a little glossy
         albedo *= 0.9 + 0.2 * vnoise3(v_world * 60.0);
         gloss = 0.25;
+    } else if (mat == 2) {                             // brain coral: meandering grooves
+        vec3 q = v_world * 9.0;
+        vec3 wq = q + 1.4 * vec3(vnoise3(q * 0.9), vnoise3(q * 0.9 + 5.0), vnoise3(q * 0.9 + 9.0));
+        float ridge = 0.5 + 0.5 * sin(vnoise3(wq * 1.3) * 15.0);
+        float groove = smoothstep(0.45, 0.98, ridge);
+        albedo *= mix(1.10, 0.62, groove);
+        albedo = mix(albedo, albedo * vec3(1.15, 1.05, 0.85) + 0.05, (1.0 - groove) * 0.25);
+        if (near > 0.12) N = bump_normal(N, v_world * 22.0, 0.55 * near);
+        gloss = 0.16;
+    } else if (mat == 4) {                             // staghorn: polyp mounds, growth rings
+        vec3 q = v_world * 62.0;
+        vec3 f = fract(q) - 0.5;
+        float h = vhash(floor(q));
+        float polyp = smoothstep(0.34, 0.16, length(f)) * step(0.35, h);
+        float pore = smoothstep(0.10, 0.04, length(f)) * step(0.35, h);
+        albedo *= (0.80 + 0.35 * polyp) * (1.0 - 0.45 * pore);
+        albedo *= 0.92 + 0.12 * sin(v_world.y * 70.0 + vnoise3(v_world * 8.0) * 4.0);
+        if (near > 0.12) N = bump_normal(N, v_world * 40.0, 0.45 * near);
+        gloss = 0.10;
     } else if (mat != 6) {                             // corals: polyps
         albedo *= 0.78 + 0.45 * smoothstep(0.35, 0.65, vnoise3(v_world * 34.0));
         if (near > 0.12) N = bump_normal(N, v_world * 24.0, 0.5 * near);
@@ -420,7 +497,7 @@ void main() {
     float shallow = smoothstep(-6.0, 0.0, v_world.z);   // brighter nearer the glass
     float ao = (dist < 14.0) ? rt_ao(v_world + N * 0.03, N, -1) : 1.0;
     vec3 bnc = (mat != 0) ? bounce_light(N, v_world) : vec3(0.0);
-    vec3 col = albedo * ((ambient(N) + bnc) * ao + u_sunCol * diff * 0.75 * sh * att)
+    vec3 col = albedo * ((irr(N, v_world) + bnc) * ao + u_sunCol * diff * 0.75 * sh * att)
              + albedo * u_sunCol * c * sh * att * (0.55 + 0.9 * shallow);
     if (mat == 6) col += albedo * u_sunCol * att * sh * pow(max(-dot(N, L), 0.0), 1.5) * 0.5;   // light through the fan
     col += gloss * pow(max(dot(N, normalize(L + V + vec3(1e-5))), 0.0), 60.0) * u_sunCol * sh * att;
@@ -429,10 +506,7 @@ void main() {
 """
 
 # -------------------------------------------------------------------- fish
-FISH_VS = """
-#version 330
-uniform mat4 u_view;
-uniform mat4 u_proj;
+FISH_ATTRS = """
 in vec3 in_pos;
 in vec3 in_nrm;
 in vec2 in_uv;
@@ -446,6 +520,50 @@ in vec4 i_anim;    // swim phase, bend, pattern, unused
 in vec3 i_c1;
 in vec3 i_c2;
 in vec3 i_c3;
+"""
+
+# Pose of one vertex for a given swim state. Shared by the colour pass and the
+# velocity pass (which evaluates it a second time with last frame's state).
+FISH_POSE = """
+vec3 fishPose(vec3 ipos, vec3 ifwd, float phase, float bend, out vec3 X, out vec3 Y, out vec3 Z) {
+    int part = int(in_part + 0.5);
+    vec3 p = in_pos;
+
+    float fs = 1.0;
+    if (part == 1) fs = i_fin.x;
+    else if (part == 2 || part == 4) fs = i_fin.y;
+    else if (part == 3) fs = i_fin.z;
+    p = in_pivot + (p - in_pivot) * fs;
+
+    if (part == 3) {                       // pectoral fins flap around the body axis
+        float side = sign(in_pivot.z);
+        float a = sin(phase * 0.8 + side) * 0.45 * side;
+        vec3 d = p - in_pivot;
+        float c = cos(a), s = sin(a);
+        p = in_pivot + vec3(d.x, d.y * c - d.z * s, d.y * s + d.z * c);
+    }
+
+    // A wave travels from head to tail; the tail end swings the most.
+    float s = clamp(0.5 - p.x, 0.0, 1.6);
+    float w = s * s * (0.35 + 0.65 * s);
+    float wave = sin(phase - s * 5.5);
+    float len = i_size.x;
+    vec3 local = p * vec3(1.0, i_size.y, i_size.z) * len;
+    local.z += (i_fin.w * wave * w * 0.20 + bend * s * s * 0.45) * len;
+
+    X = normalize(ifwd);
+    Z = cross(X, vec3(0.0, 1.0, 0.0));
+    Z = normalize(Z + vec3(1e-4, 0.0, 0.0));
+    Y = cross(Z, X);
+    return ipos + X * local.x + Y * local.y + Z * local.z;
+}
+"""
+
+FISH_VS = """
+#version 330
+uniform mat4 u_view;
+uniform mat4 u_proj;
+""" + FISH_ATTRS + """
 out vec3 v_world;
 out vec3 v_nrm;
 out vec2 v_uv;
@@ -460,37 +578,10 @@ flat out vec3 v_c1;
 flat out vec3 v_c2;
 flat out vec3 v_c3;
 
+""" + FISH_POSE + """
 void main() {
-    int part = int(in_part + 0.5);
-    vec3 p = in_pos;
-
-    float fs = 1.0;
-    if (part == 1) fs = i_fin.x;
-    else if (part == 2 || part == 4) fs = i_fin.y;
-    else if (part == 3) fs = i_fin.z;
-    p = in_pivot + (p - in_pivot) * fs;
-
-    if (part == 3) {                       // pectoral fins flap around the body axis
-        float side = sign(in_pivot.z);
-        float a = sin(i_anim.x * 0.8 + side) * 0.45 * side;
-        vec3 d = p - in_pivot;
-        float c = cos(a), s = sin(a);
-        p = in_pivot + vec3(d.x, d.y * c - d.z * s, d.y * s + d.z * c);
-    }
-
-    // A wave travels from head to tail; the tail end swings the most.
-    float s = clamp(0.5 - p.x, 0.0, 1.6);
-    float w = s * s * (0.35 + 0.65 * s);
-    float wave = sin(i_anim.x - s * 5.5);
-    float len = i_size.x;
-    vec3 local = p * vec3(1.0, i_size.y, i_size.z) * len;
-    local.z += (i_fin.w * wave * w * 0.20 + i_anim.y * s * s * 0.45) * len;
-
-    vec3 X = normalize(i_fwd);
-    vec3 Z = cross(X, vec3(0.0, 1.0, 0.0));
-    Z = normalize(Z + vec3(1e-4, 0.0, 0.0));
-    vec3 Y = cross(Z, X);
-    vec3 world = i_pos + X * local.x + Y * local.y + Z * local.z;
+    vec3 X, Y, Z;
+    vec3 world = fishPose(i_pos, i_fwd, i_anim.x, i_anim.y, X, Y, Z);
 
     vec3 nl = normalize(in_nrm / vec3(1.0, i_size.y, i_size.z));
     v_nrm = X * nl.x + Y * nl.y + Z * nl.z;
@@ -508,6 +599,149 @@ void main() {
     v_c3 = i_c3;
     gl_Position = u_proj * u_view * vec4(world, 1.0);
 }
+"""
+
+
+
+# One texel of the probe atlas per fragment: trace two cosine-weighted rays for one axis
+# direction of one probe and blend into the history (read from u_giTex).
+GI_UPDATE_FS = "#version 330\n" + COMMON + """
+uniform float u_first;
+out vec4 o_col;
+
+vec3 gi_axis(int d) {
+    if (d == 0) return vec3(1.0, 0.0, 0.0);
+    if (d == 1) return vec3(-1.0, 0.0, 0.0);
+    if (d == 2) return vec3(0.0, 1.0, 0.0);
+    if (d == 3) return vec3(0.0, -1.0, 0.0);
+    if (d == 4) return vec3(0.0, 0.0, 1.0);
+    return vec3(0.0, 0.0, -1.0);
+}
+
+// Radiance arriving along -d at p: occluder, sea floor or open water.
+vec3 gi_trace(vec3 p, vec3 d) {
+    const float maxd = 7.0;
+    float te = 1e9;
+    int hid = -1;
+    vec3 hn = vec3(0.0, 1.0, 0.0);
+    ivec2 prev = ivec2(-1000);
+    for (int s = 0; s < 4; s++) {                       // the ray crosses up to four 2 m cells
+        vec3 q = p + d * (maxd * float(s) / 3.0);
+        ivec2 c = ivec2(floor((q.xz - u_wgridOrigin) / u_wcell));
+        if (c == prev) continue;
+        prev = c;
+        if (c.x < 0 || c.y < 0 || c.x >= u_wgridDim.x || c.y >= u_wgridDim.y) continue;
+        for (int k = 0; k < WGRID_K; k++) {
+            float idf = texelFetch(u_wgrid, ivec2(c.x * WGRID_K + k, c.y), 0).r;
+            if (idf < 0.0) break;
+            int id = int(idf + 0.5);
+            vec3 oc = p - texelFetch(u_occ, ivec2(id, 0), 0).xyz;
+            float rmax = texelFetch(u_occ, ivec2(id, 3), 0).w;
+            float b = dot(oc, d);
+            if ((b > 0.0 && dot(oc, oc) > rmax * rmax) || dot(oc, oc) - b * b > rmax * rmax) continue;
+            Occ o = load_occ(id);
+            if (o.opac < 0.5) continue;
+            vec3 nn;
+            float t = ell_hit(o, p, d, nn);
+            if (t > 0.0 && t < te && t < maxd) { te = t; hid = id; hn = nn; }
+        }
+    }
+    float tf = -1.0;
+    if (d.y < -0.001) {
+        float tt = (u_floor - p.y) / d.y;
+        for (int i = 0; i < 4; i++) {
+            vec3 q = p + d * tt;
+            tt += (floor_h(q.xz) - q.y) / d.y;
+        }
+        if (tt > 0.0 && tt < maxd) tf = tt;
+    }
+    vec3 L = normalize(u_sunDir);
+    if (hid >= 0 && (tf < 0.0 || te < tf)) {
+        vec3 hp = p + d * te;
+        float sh = rt_shadow(hp + hn * 0.05, L, hid);
+        vec3 rad = load_occ(hid).col * (ambient(hn) * 0.8 + u_sunCol * max(dot(hn, L), 0.0) * sh * sun_atten(hp) * 0.55);
+        return rad / (1.0 + te * te * 0.03);
+    }
+    if (tf > 0.0) {
+        vec3 hp = p + d * tf;
+        float flux = rt_flux(hp, 2.0) * 0.5;
+        vec3 rad = vec3(0.80, 0.72, 0.52) * (ambient(vec3(0.0, 1.0, 0.0)) * 0.8
+            + u_sunCol * sun_atten(hp) * max(L.y, 0.0) * (0.5 + 0.5 * flux) * 0.6);
+        return rad / (1.0 + tf * tf * 0.03);
+    }
+    return ambient(d);                                  // open water
+}
+
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    int dir = px.x / u_giDim.x;
+    int ix = px.x - dir * u_giDim.x;
+    int iz = px.y / u_giDim.y;
+    int iy = px.y - iz * u_giDim.y;
+    vec3 p = u_giOrigin + vec3(float(ix), float(iy), float(iz)) * u_giStep;
+    p.y = max(p.y, floor_h(p.xz) + 0.08);               // probes below the sand are lifted onto it
+    vec3 N = gi_axis(dir);
+    vec3 acc = vec3(0.0);
+    for (int s = 0; s < 2; s++) {
+        vec2 xi = vec2(hash12(gl_FragCoord.xy + u_frame * 7.13 + float(s) * 19.7),
+                       hash12(gl_FragCoord.yx * 1.7 + u_frame * 3.91 + float(s) * 5.3));
+        acc += gi_trace(p, cosine_dir(N, xi));
+    }
+    vec3 cur = acc * 0.5;
+    if (any(isnan(cur)) || any(isinf(cur))) cur = ambient(N);
+    vec3 hist = texelFetch(u_giTex, px, 0).rgb;
+    if (any(isnan(hist)) || any(isinf(hist))) hist = cur;
+    float a = (u_first > 0.5) ? 1.0 : 0.07;
+    o_col = vec4(mix(hist, cur, a), 1.0);
+}
+"""
+
+# ---------------------------------------------------------- velocity (motion) pass
+# Writes, per pixel of a moving object, where that surface point was on screen last
+# frame (xy = previous uv, w = 1). Everything else is left at 0 and falls back to the
+# camera-only reprojection in the TAA pass.
+FISH_VEL_VS = """
+#version 330
+uniform mat4 u_view;
+uniform mat4 u_proj;
+uniform mat4 u_prevVP;
+in vec3 in_pos;
+in float in_part;
+in vec3 in_pivot;
+in vec3 i_pos;
+in vec3 i_fwd;
+in vec4 i_size;
+in vec4 i_fin;
+in vec4 i_anim;
+in vec3 p_pos;
+in vec3 p_fwd;
+in vec2 p_anim;
+out vec4 v_prev;
+""" + FISH_POSE + """
+void main() {
+    vec3 X, Y, Z;
+    vec3 world = fishPose(i_pos, i_fwd, i_anim.x, i_anim.y, X, Y, Z);
+    vec3 prevWorld = fishPose(p_pos, p_fwd, p_anim.x, p_anim.y, X, Y, Z);
+    v_prev = u_prevVP * vec4(prevWorld, 1.0);
+    gl_Position = u_proj * u_view * vec4(world, 1.0);
+}
+"""
+
+FISH_VEL_FS = """
+#version 330
+in vec4 v_prev;
+out vec4 o_col;
+void main() {
+    vec2 puv = v_prev.xy / max(v_prev.w, 1e-4) * 0.5 + 0.5;
+    o_col = vec4(puv, 0.0, 1.0);
+}
+"""
+
+# Occluders in the velocity pass: depth only, no motion of their own.
+VEL_CLEAR_FS = """
+#version 330
+out vec4 o_col;
+void main() { o_col = vec4(0.0); }
 """
 
 # Body and fins share the same helper functions; fins are drawn in a second,
@@ -586,7 +820,7 @@ vec3 fin_color(int pat, float along, float outv) {
     else if (pat == 6) c = mix(v_c1, v_c2, step(0.5, fract(along * 14.0)));
     else if (pat == 7) c = mix(v_c1, v_c3, smoothstep(0.4, 1.0, outv));
     else c = (v_part < 2.5) ? v_c1 : vec3(0.95, 0.8, 0.1);
-    return c * (0.82 + 0.18 * sin(along * 80.0));
+    return c;
 }
 """
 
@@ -597,7 +831,10 @@ void main() {
     float t = v_uv.x;
     float v = v_uv.y;
     float emis = 0.0;
-    vec3 albedo = body_color(pat, t, v, emis);
+    vec2 warp = vec2(vnoise3(vec3(t * 22.0, v * 6.0, float(v_id))),
+                     vnoise3(vec3(t * 22.0 + 7.0, v * 6.0, float(v_id) + 3.0))) - 0.5;
+    vec3 albedo = body_color(pat, t + 0.014 * warp.x, v + 0.10 * warp.y, emis);
+    albedo *= 0.93 + 0.14 * vnoise3(vec3(t * 9.0, v * 3.0, float(v_id) * 1.7));      // mottled skin
 
     // gills and mouth
     float gill = smoothstep(0.012, 0.0, abs(t - 0.215 - 0.045 * v * v)) * step(-0.65, v) * step(v, 0.85);
@@ -609,18 +846,40 @@ void main() {
     float d = length(e);
     float eyeMask = (abs(v_nloc.z) > 0.35 && v_local.x > 0.30) ? smoothstep(0.034, 0.030, d) : 0.0;
     if (eyeMask > 0.0) {
-        albedo = mix(albedo, vec3(0.92, 0.82, 0.45), eyeMask);
-        albedo = mix(albedo, vec3(0.01), smoothstep(0.022, 0.019, d) * eyeMask);
-        albedo += vec3(1.0) * smoothstep(0.008, 0.004, length(e - vec2(0.006, 0.008))) * eyeMask;
+        float ang = atan(e.y, e.x);
+        vec3 iris = mix(vec3(0.50, 0.28, 0.06), vec3(0.98, 0.80, 0.30), 0.5 + 0.5 * sin(ang * 22.0 + d * 90.0));
+        iris *= 0.75 + 0.5 * smoothstep(0.010, 0.026, d);                    // brighter toward the rim
+        vec3 eyeCol = mix(vec3(0.82, 0.80, 0.74), iris, smoothstep(0.031, 0.026, d));   // pale sclera -> iris
+        eyeCol = mix(eyeCol, vec3(0.03, 0.02, 0.01), smoothstep(0.030, 0.027, d) * smoothstep(0.022, 0.026, d));  // limbus
+        eyeCol = mix(eyeCol, vec3(0.005), smoothstep(0.013, 0.010, d));      // pupil
+        albedo = mix(albedo, eyeCol, eyeMask);
+        albedo += vec3(1.0) * smoothstep(0.0085, 0.0040, length(e - vec2(0.007, 0.009))) * eyeMask;
+        albedo += vec3(0.6) * smoothstep(0.0040, 0.0015, length(e - vec2(-0.008, -0.007))) * eyeMask;
+        vec3 upv = normalize(vec3(0.0, 1.0, 0.0) - v_fwd * v_fwd.y);
+        N = normalize(N + (v_fwd * e.x + upv * e.y) / 0.034 * 0.55 * eyeMask);     // domed lens
     }
 
-    // scales: tiny bumps perturb the normal (smoother on sharks)
+    // scales: overlapping plates, lit toward their free rear edge. They fade out once they
+    // get close to a pixel in size, so distant fish do not shimmer.
     float scaleAmt = (pat == 3) ? 0.10 : ((pat == 5 || pat == 0) ? 0.30 : 0.22);
-    vec2 sc = vec2(t * 170.0, v * 20.0 + t * 55.0);
-    float dA = cos(sc.x) * sin(sc.y);
-    float dB = sin(sc.x) * cos(sc.y);
-    N = normalize(N + (v_fwd * dA + cross(N, v_fwd) * dB) * 0.10 * scaleAmt * (1.0 - eyeMask));
-    albedo *= 0.94 + 0.06 * sin(sc.x) * sin(sc.y);
+    vec2 sg = vec2(t * 48.0, v * 10.0);
+    sg.x += 0.5 * mod(floor(sg.y), 2.0);
+    vec2 cell = floor(sg);
+    vec2 fs = fract(sg);
+    float rnd = hash12(cell + float(v_id) * 3.7);
+    float vis = (1.0 - smoothstep(0.30, 0.65, max(fwidth(sg.x), fwidth(sg.y)))) * (1.0 - eyeMask);
+    float plate = mix(0.78, 1.08, smoothstep(0.0, 0.8, fs.x)) * (0.90 + 0.20 * (1.0 - abs(fs.y - 0.5) * 2.0));
+    albedo *= mix(1.0, plate * (0.93 + 0.14 * rnd), vis * min(1.0, scaleAmt * 3.2));
+    N = normalize(N + (v_fwd * (0.5 - fs.x) + cross(N, v_fwd) * (0.5 - fs.y)) * 0.30 * scaleAmt * vis);
+    float glint = (pat == 0 || pat == 4 || pat == 5) ? smoothstep(0.90, 0.99, rnd) * vis : 0.0;    // a few plates catch the light
+
+    float gd = t - 0.215 - 0.045 * v * v;                               // gill cover: raised rim, crease behind it
+    float ridge = exp(-pow(gd / 0.007, 2.0)) * step(-0.65, v) * step(v, 0.85);
+    N = normalize(N - v_fwd * clamp(gd / 0.010, -1.0, 1.0) * ridge * 0.45);
+    albedo *= 1.0 - 0.30 * ridge * smoothstep(0.0, -0.012, gd);
+
+    float lat = smoothstep(0.030, 0.0, abs(v + 0.02 - 0.03 * sin(t * 9.0))) * step(0.22, t) * step(t, 0.92);
+    albedo *= 1.0 - 0.30 * lat * (0.35 + 0.65 * smoothstep(0.30, 0.55, 0.5 + 0.5 * sin(t * 48.0 * 6.2832))) * vis;
 
     vec3 L = normalize(u_sunDir);
     vec3 V = normalize(u_camPos - v_world);
@@ -631,7 +890,7 @@ void main() {
     float att = sun_atten(v_world);
     float ndv = max(dot(N, V), 0.0);
     float ao = rt_ao(v_world + N * 0.02, N, u_nstatic + v_id);
-    vec3 lit = (ambient(N) + bounce_light(N, v_world)) * ao + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
+    vec3 lit = (irr(N, v_world) + bounce_light(N, v_world)) * ao + u_sunCol * att * sh * (0.55 * diff + 0.35 * wrap);
     vec3 col = albedo * lit;
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
@@ -649,7 +908,16 @@ void main() {
     vec3 H = normalize(L + V + vec3(1e-5));
     float spec = pow(max(dot(N, H), 0.0), 70.0) * 0.55 * sh;
     spec += eyeMask * pow(max(dot(N, H), 0.0), 300.0) * 3.0 * sh;      // wet, glossy eye
+    spec += glint * pow(max(dot(N, H), 0.0), 40.0) * 0.40 * sh;
     col += spec * u_sunCol;
+    // environment reflection: wet skin mirrors the bright water above and what the probes see around it
+    vec3 R = reflect(-V, N);
+    float fres = pow(clamp(1.0 - ndv, 0.0, 1.0), 4.0);
+    float gloss = (pat == 3) ? 0.35 : ((pat == 0 || pat == 4 || pat == 5) ? 1.0 : 0.6);
+    gloss = mix(gloss, 1.4, eyeMask);                                   // the eye is the wettest part
+    vec3 env = irr(R, v_world + N * 0.05);
+    env += vec3(0.45, 0.70, 0.85) * smoothstep(-0.1, 0.7, R.y) * (0.15 + 0.85 * u_day) * att * 1.2;
+    col += (0.12 + 0.90 * fres) * gloss * (0.4 + 0.6 * ao) * env;
     float rim = pow(clamp(1.0 - ndv, 0.0, 1.0), 3.0);
     col += rim * vec3(0.10, 0.26, 0.36) * (0.4 + 0.6 * u_day);
     col += albedo * emis * 0.9;                       // neon stripes glow (feeds the bloom)
@@ -668,18 +936,29 @@ void main() {
     int pat = int(v_pattern + 0.5);
     vec3 albedo = fin_color(pat, v_uv.x, v_uv.y);
 
-    float ray = 0.5 + 0.5 * sin(v_uv.x * 90.0 + float(part) * 1.7);
-    float base = smoothstep(0.30, 0.0, v_uv.y);
-    float alpha = mix(0.38, 0.84, 0.55 * ray + 0.45);
-    alpha = max(alpha * mix(1.0, 0.7, smoothstep(0.5, 1.0, v_uv.y)), base * 0.92);
+    float along = v_uv.x, outv = v_uv.y;
+    float rr = along * ((part == 1) ? 22.0 : 26.0);
+    float dr1 = abs(fract(rr) - 0.5) * 2.0;                            // 0 on a ray, 1 in the gap
+    float dr2 = abs(fract(rr * 2.0) - 0.5) * 2.0;                      // rays fork toward the tip
+    float dray = mix(dr1, dr2, smoothstep(0.35, 0.75, outv));
+    float rayLine = smoothstep(0.50, 0.12, dray);
+    rayLine = mix(rayLine, 0.45, smoothstep(0.35, 0.80, fwidth(rr)));  // no moire when the rays get dense
+    float base = smoothstep(0.30, 0.0, outv);
+    float alpha = mix(0.24, 0.86, rayLine);
+    alpha = max(alpha * mix(1.0, 0.7, smoothstep(0.5, 1.0, outv)), base * 0.92);
+    float cut = 0.95 - 0.07 * dray;                                    // membrane recedes between the rays
+    alpha *= 1.0 - smoothstep(cut - 0.03, cut + 0.03, outv);
+    albedo *= mix(1.04, 0.80, rayLine);
 
     vec3 L = normalize(u_sunDir);
     float sh = rt_shadow(v_world, L, u_nstatic + v_id);
     float att = sun_atten(v_world);
     float ndl = dot(N, L);
     float through = pow(max(-ndl, 0.0), 1.4);          // sun shining through the membrane
-    vec3 lit = ambient(N) + bounce_light(N, v_world) * 0.5 + u_sunCol * att * sh * (0.40 * abs(ndl) + 0.75 * through);
+    vec3 lit = irr(N, v_world) + bounce_light(N, v_world) * 0.5 + u_sunCol * att * sh * (0.40 * abs(ndl) + 0.75 * through);
     vec3 col = albedo * lit;
+    vec3 Vf = normalize(u_camPos - v_world);                // membrane edges scatter the surroundings
+    col += albedo * irr(reflect(-Vf, N), v_world) * 0.25 * pow(clamp(1.0 - abs(dot(N, Vf)), 0.0, 1.0), 3.0);
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.05, u_time * 0.55);
     col += albedo * u_sunCol * att * sh * cz * 0.25;
@@ -704,6 +983,7 @@ out vec3 v_nrm;
 out vec3 v_col;
 out float v_u;
 out float v_side;
+out vec3 v_lat;
 flat out float v_kind;
 void main() {
     float u = in_uv.x;
@@ -722,6 +1002,7 @@ void main() {
                + across * (sway * amp + current) + lat * side * width;
     v_world = world;
     v_nrm = across;
+    v_lat = lat;
     v_col = i_col;
     v_u = u;
     v_side = side;
@@ -736,24 +1017,48 @@ in vec3 v_nrm;
 in vec3 v_col;
 in float v_u;
 in float v_side;
+in vec3 v_lat;
 flat in float v_kind;
 out vec4 o_col;
 void main() {
     vec3 N = normalize(v_nrm);
     if (!gl_FrontFacing) N = -N;
+    bool anem = v_kind > 0.5 && v_kind < 1.5;
+    bool grass = v_kind > 1.5;
+    // blades curl slightly across their width, anemone tentacles are round tubes
+    N = normalize(N + v_lat * v_side * (anem ? 1.1 : 0.45));
     vec3 L = normalize(u_sunDir);
-    vec3 albedo = v_col * mix(0.62, 1.30, v_u) * (0.88 + 0.12 * smoothstep(0.0, 0.25, abs(v_side)));
-    float trans = pow(max(dot(-N, L), 0.0), 1.5) * 0.5;      // light shining through the blade
+    vec3 V = normalize(u_camPos - v_world);
+
+    float aa = 1.0 - smoothstep(0.5, 1.2, fwidth(v_side) * 14.0);          // veins fade before they alias
+    float rib = smoothstep(0.12, 0.0, abs(v_side));
+    float veins = 0.5 + 0.5 * sin(v_side * 22.0 + vnoise3(v_world * 6.0) * 2.0);
+    float blotch = vnoise3(v_world * vec3(7.0, 2.5, 7.0));
+    float leaf = anem ? 0.0 : 1.0;
+    vec3 albedo = v_col * mix(0.55, 1.25, v_u);                            // darker toward the holdfast
+    albedo = mix(albedo, albedo * vec3(1.18, 1.10, 0.62), smoothstep(0.55, 1.0, v_u) * 0.5);   // sun-bleached tips
+    albedo *= 0.82 + 0.36 * blotch;
+    albedo *= 1.0 - 0.14 * veins * aa * leaf;
+    albedo = mix(albedo, albedo * vec3(1.15, 1.20, 0.80), rib * aa * 0.5 * leaf);                // pale midrib
+    albedo *= 0.90 + 0.10 * smoothstep(0.0, 0.25, abs(v_side));
+    float fleck = step(0.965, vnoise3(v_world * vec3(40.0, 14.0, 40.0)));
+    albedo = mix(albedo, vec3(0.85, 0.82, 0.70), fleck * 0.5 * (1.0 - v_u) * ((grass || anem) ? 0.0 : 1.0));   // epiphytes
+    if (anem) albedo *= 0.90 + 0.10 * sin(v_u * 60.0);                     // faint rings along the tentacle
+
+    float trans = pow(max(dot(-N, L), 0.0), 1.5) * (0.35 + 0.35 * abs(v_side) + 0.30 * (1.0 - rib));
     float sh = rt_shadow(v_world, L, -1);
     float att = sun_atten(v_world);
     float ao = rt_ao(v_world, N, -1);
-    vec3 lit = (ambient(N) + bounce_light(N, v_world)) * ao + u_sunCol * att * sh * (0.45 * abs(dot(N, L)) + trans);
+    vec3 lit = (irr(N, v_world) + bounce_light(N, v_world)) * ao + u_sunCol * att * sh * (0.45 * abs(dot(N, L)) + trans);
     vec3 col = albedo * lit;
     float cz = (u_rt > 0.5) ? rt_flux(v_world, 1.4) * 0.5
                             : caustics(v_world.xz * 0.16 + v_world.y * 0.1, u_time * 0.55);
     col += albedo * u_sunCol * att * sh * cz * 0.25;
-    if (v_kind > 0.5 && v_kind < 1.5)                       // anemone tentacles glow at the tips
+    col += u_sunCol * sh * att * pow(max(dot(N, normalize(L + V)), 0.0), 40.0) * 0.22;    // wet sheen
+    if (anem) {                                                             // glowing, pale-tipped tentacles
         col += v_col * 0.9 * smoothstep(0.55, 1.0, v_u) * (0.45 + 0.55 * u_day);
+        col = mix(col, v_col * 1.3 + 0.35, smoothstep(0.86, 1.0, v_u) * 0.5);
+    }
     o_col = vec4(apply_fog(col, v_world, gl_FragCoord.xy / u_res), length(u_camPos - v_world));
 }
 """
@@ -797,6 +1102,7 @@ in vec3 v_local;
 out vec4 o_col;
 void main() {
     vec3 N = normalize(v_nrm);
+    N = bump_normal(N, v_local * 9.0, 0.12);                              // faintly warty surface
     vec3 V = normalize(u_camPos - v_world);
     float ndv = abs(dot(N, V));
     float fres = pow(clamp(1.0 - ndv, 0.0, 1.0), 2.0);
@@ -816,7 +1122,25 @@ void main() {
     vec3 tint = mix(vec3(1.0), v_col * 1.25, 0.40);
     vec3 col = seen * tint * 0.95 + glow * (0.30 + 0.5 * fres);
     float a = 0.50 + 0.40 * fres;
-    o_col = vec4(col * a, a);
+
+    // anatomy seen through the bell: radial canals, ring canal, gonads, muscular rim
+    float ang = atan(v_local.z, v_local.x);
+    float rho = length(v_local.xz);
+    float hh = clamp((v_local.y + 0.14) / 0.94, 0.0, 1.0);               // 0 at the rim, 1 at the apex
+    float canal = smoothstep(0.05, 0.0, abs(sin(ang * 4.0))) * smoothstep(0.05, 0.25, rho)
+                + 0.45 * smoothstep(0.06, 0.0, abs(sin(ang * 8.0 + 0.39))) * smoothstep(0.35, 0.8, rho);
+    canal = max(canal, smoothstep(0.045, 0.0, abs(hh - 0.07)));
+    col = mix(col, v_col * 0.45, clamp(canal, 0.0, 1.0) * 0.55);
+    a += clamp(canal, 0.0, 1.0) * 0.22;
+    float lobe = smoothstep(0.17, 0.0, abs(rho - 0.40)) * smoothstep(0.30, 0.60, 0.5 + 0.5 * cos(ang * 4.0 + 0.78))
+               * smoothstep(0.30, 0.50, hh);
+    col = mix(col, vec3(1.0, 0.55, 0.68) * (0.6 + 0.4 * u_day), lobe * 0.85);
+    a = max(a, 0.80 * lobe);
+    float rimb = smoothstep(0.16, 0.0, hh);
+    col = mix(col, v_col * 1.35, rimb * 0.55);
+    a += rimb * 0.28;
+    a += 0.14 * step(0.945, vhash(floor(v_local * 42.0)));                // nematocyst warts
+    o_col = vec4(col * min(a, 0.97), min(a, 0.97));
 }
 """
 
@@ -833,18 +1157,24 @@ in vec3 i_col;
 out vec3 v_world;
 out vec3 v_col;
 out float v_u;
+out float v_arm;
 void main() {
     float u = in_t.x;
     float k = in_t.z;
-    float ang = 6.2831853 * k / 14.0;
+    bool arm = k > 13.5;                                  // k 0..13 thin tentacles, 14..17 oral arms
+    float ang = arm ? 6.2831853 * (k - 14.0) / 4.0 + 0.4 : 6.2831853 * k / 14.0;
     float pulse = sin(i_phase);
-    float rim = 0.85 * (1.0 - 0.14 * pulse);
-    vec3 top = vec3(cos(ang) * rim, -0.12, sin(ang) * rim);
-    float len = 2.3 + 0.8 * fract(sin(k * 12.9898) * 43758.5453);
+    float rim = arm ? 0.16 : 0.85 * (1.0 - 0.14 * pulse);
+    vec3 top = vec3(cos(ang) * rim, arm ? 0.02 : -0.12, sin(ang) * rim);
+    float len = (arm ? 1.0 : 2.3) + (arm ? 0.35 : 0.8) * fract(sin(k * 12.9898) * 43758.5453);
     vec3 p = top + vec3(0.0, -u * len, 0.0);
-    p.x += sin(u_time * 1.4 + u * 5.0 - i_phase * 0.5 + k) * 0.12 * u;
-    p.z += cos(u_time * 1.1 + u * 4.0 + k * 1.7) * 0.12 * u;
-    vec3 side = vec3(-sin(ang), 0.0, cos(ang)) * in_t.y * 0.018 * (1.0 - 0.6 * u);
+    float sw = arm ? 0.20 : 0.12;
+    p.x += sin(u_time * 1.4 + u * 5.0 - i_phase * 0.5 + k) * sw * u;
+    p.z += cos(u_time * 1.1 + u * 4.0 + k * 1.7) * sw * u;
+    float wid = arm ? 0.075 * (1.0 - 0.45 * u) * (1.0 + 0.45 * sin(u * 26.0 + k))    // frilly
+                    : 0.018 * (1.0 - 0.6 * u);
+    vec3 side = vec3(-sin(ang), 0.0, cos(ang)) * in_t.y * wid;
+    v_arm = arm ? 1.0 : 0.0;
     vec3 world = i_pos + (p + side) * i_size;
     v_world = world;
     v_col = i_col;
@@ -857,10 +1187,12 @@ JELLY_TENT_FS = "#version 330\n" + COMMON + """
 in vec3 v_world;
 in vec3 v_col;
 in float v_u;
+in float v_arm;
 out vec4 o_col;
 void main() {
-    float a = (1.0 - v_u) * 0.55;
-    vec3 col = apply_fog(v_col * (0.6 + 0.4 * u_day), v_world, gl_FragCoord.xy / u_res);
+    float a = mix((1.0 - v_u) * 0.55 * (0.72 + 0.28 * sin(v_u * 90.0)), (1.0 - 0.7 * v_u) * 0.75, v_arm);
+    vec3 base = mix(v_col, vec3(1.0, 0.88, 0.94), 0.40 * v_arm);
+    vec3 col = apply_fog(base * (0.6 + 0.4 * u_day), v_world, gl_FragCoord.xy / u_res);
     o_col = vec4(col * a, a);
 }
 """
@@ -1039,6 +1371,7 @@ uniform float u_vig;
 uniform float u_dither;
 uniform float u_ca;
 uniform float u_grain;
+uniform float u_photo;
 in vec2 uv;
 out vec4 o_col;
 float hash12(vec2 p) {
@@ -1057,7 +1390,17 @@ void main() {
     vec2 d = (uv - 0.5) * vec2(u_res.x / u_res.y * 0.55, 1.0) * 2.0;
     c *= 1.0 - u_vig * smoothstep(0.55, 1.6, length(d));
     if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
-    c = c / (1.0 + 0.12 * c);                    // gentle highlight roll-off
+    vec3 soft = c / (1.0 + 0.12 * c);            // gentle highlight roll-off
+    if (u_photo > 0.001) {
+        vec3 x = c * 1.08;                        // filmic curve (Narkowicz ACES fit): contrast in the mids, soft shoulder
+        vec3 film = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+        float luma = dot(film, vec3(0.30, 0.59, 0.11));
+        film = mix(vec3(luma), film, 0.86);       // real water is less saturated than a render
+        film += vec3(-0.004, 0.006, 0.010) * (1.0 - luma) * (1.0 - luma);     // cool shadows
+        film += vec3(0.012, 0.006, -0.008) * luma * luma;                     // warm highlights
+        soft = mix(soft, film, u_photo);
+    }
+    c = soft;
     c += (hash12(gl_FragCoord.xy + fract(u_time) * 91.0) - 0.5) / 255.0 * u_dither;   // de-band gradients
     c += (hash12(gl_FragCoord.xy * 1.37 + fract(u_time * 7.0) * 131.0) - 0.5) * u_grain * 0.06
          * (1.0 - 0.6 * clamp(dot(c, vec3(0.3, 0.59, 0.11)), 0.0, 1.0));      // film grain
@@ -1277,6 +1620,7 @@ TAA_FS = """
 #version 330
 uniform sampler2D u_cur;
 uniform sampler2D u_hist;
+uniform sampler2D u_vel;
 uniform mat4 u_invVP;
 uniform mat4 u_prevVP;
 uniform vec3 u_camPos;
@@ -1315,6 +1659,8 @@ void main() {
     float dist = cur.a > 0.0 ? cur.a : 120.0;
     vec4 pc = u_prevVP * vec4(u_camPos + dir * dist, 1.0);
     vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
+    vec4 vel = texelFetch(u_vel, px, 0);
+    if (vel.a > 0.5) { puv = vel.xy; pc.w = 1.0; }          // moving object: its own motion
     bool valid = u_first < 0.5 && pc.w > 0.0 && all(greaterThan(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)));
     vec3 hist = texture(u_hist, valid ? puv : vec2(0.5)).rgb;
     if (bad3(hist)) valid = false;                    // never carry a bad history forward
