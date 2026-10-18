@@ -1,7 +1,8 @@
 import colorsys
 import unittest
 
-from iridescence import FACE_ON_FLOOR, STRENGTH, add_iridescence, iridescence_rgb
+import iridescence
+from iridescence import add_iridescence, flip, iridescence_rgb, metal_weight
 
 BASE = (0.8, 0.4, 0.2)
 
@@ -43,10 +44,29 @@ class IridescenceTest(unittest.TestCase):
         face_on = add_iridescence(BASE, 1.0, 2.0)
         self.assertTrue(any(after - before > 0.01 for before, after in zip(BASE, face_on)))
 
-    def test_shader_uses_the_same_numbers(self):
+    def test_hue_is_fully_saturated(self):
+        for i in range(21):
+            rgb = iridescence_rgb(i / 20.0, 3.0)
+            self.assertAlmostEqual(max(rgb), 1.0, places=3)
+            self.assertLess(min(rgb), 0.9)          # never washed out to white
+
+    def test_glow_does_not_depend_on_the_base_colour(self):
+        out = add_iridescence((0.0, 0.0, 0.0), 0.3, 2.0)
+        self.assertGreater(max(out), 0.05)          # a black fish still glows: it is fluorescent
+
+    def test_metallic_flip_flop_has_bright_bands_and_dark_gaps(self):
+        weights = [metal_weight(i / 200.0, 0.0) for i in range(201)]
+        self.assertGreater(max(weights) / min(weights), 4.0)
+        self.assertTrue(all(0.0 <= flip(i / 20.0, 1.0) <= 1.0 for i in range(21)))
+
+    def test_shader_gets_its_constants_from_the_module(self):
+        for name in ("STRENGTH", "FLUOR", "SATURATION_POWER", "METAL_PEAK", "FLIP_RATE"):
+            line = "const float IRID_%s = %.3f;" % (name if name != "SATURATION_POWER" else "SAT_POWER", getattr(iridescence, name))
+            self.assertIn(line, iridescence.GLSL_CONSTS)
         with open("shaders.py", encoding="utf-8") as f:
             source = f.read()
-        self.assertIn(f"irid * {STRENGTH:.2f} * u_irid * ({FACE_ON_FLOOR:.2f} + {1.0 - FACE_ON_FLOOR:.2f} * ", source)
+        self.assertIn("FISH_FUNCS + IRID_GLSL", source)
+        self.assertIn("IRID_STRENGTH", source)
 
 
 if __name__ == "__main__":

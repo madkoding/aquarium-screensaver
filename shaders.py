@@ -1,5 +1,5 @@
 """GLSL 3.30 sources for every pass of the aquarium renderer."""
-
+from iridescence import GLSL_CONSTS as IRID_GLSL
 
 # Water-surface waves and sea-floor height, shared by the caustic vertex shader
 # and every fragment shader (so CPU and GPU agree on the same ocean).
@@ -825,7 +825,7 @@ vec3 fin_color(int pat, float along, float outv) {
 }
 """
 
-FISH_FS = "#version 330\n" + COMMON + FISH_FUNCS + """
+FISH_FS = "#version 330\n" + COMMON + FISH_FUNCS + IRID_GLSL + """
 void main() {
     vec3 N = normalize(v_nrm);
     int pat = int(v_pattern + 0.5);
@@ -900,10 +900,21 @@ void main() {
     // subsurface scattering: backlit thin edges glow with the light passing through
     float back = pow(max(dot(V, -L), 0.0), 2.0);
     col += albedo * u_sunCol * att * sh * back * pow(clamp(1.0 - ndv, 0.0, 1.0), 1.5) * 0.8;
-    // thin-film iridescence on shiny species
+    // thin-film iridescence on shiny species (constants and CPU reference: iridescence.py).
+    // Fluorescent: a fully saturated hue, part of it self-lit so it survives shade and night and feeds the bloom.
+    // Metallic: bright, coloured flip-flop bands that sweep across the body as the angle changes, and a
+    // coloured mirror of the surroundings.
     if (pat == 0 || pat == 4 || pat == 5) {
-        vec3 irid = 0.5 + 0.5 * cos(6.2831853 * (ndv * 1.2 + u_time * 0.05 + vec3(0.0, 0.33, 0.67)));
-        col += albedo * irid * 0.40 * u_irid * (0.25 + 0.75 * clamp(1.0 - ndv, 0.0, 1.0)) * (0.3 + 0.7 * att * sh);
+        vec3 irid = 0.5 + 0.5 * cos(6.2831853 * (ndv * 1.2 + u_time * IRID_TIME_RATE + vec3(0.0, 0.33, 0.67)));
+        irid = pow(irid, vec3(IRID_SAT_POWER));
+        irid /= max(max(irid.r, irid.g), irid.b) + 1e-4;
+        float flipw = 0.5 + 0.5 * sin(ndv * IRID_FLIP_RATE + N.y * IRID_FLIP_NORMAL + u_time * IRID_FLIP_TIME);
+        float face = IRID_FACE_FLOOR + (1.0 - IRID_FACE_FLOOR) * clamp(1.0 - ndv, 0.0, 1.0);
+        float metal = IRID_METAL_BASE + IRID_METAL_PEAK * flipw * flipw * flipw;
+        vec3 mirror = irr(reflect(-V, N), v_world + N * 0.05);
+        col += albedo * irid * IRID_STRENGTH * u_irid * face * metal * (0.3 + 0.7 * att * sh);
+        col += irid * IRID_FLUOR * u_irid * face * (0.35 + 0.65 * flipw);
+        col += irid * mirror * IRID_MIRROR * u_irid * face * flipw * flipw;
     }
 
     vec3 H = normalize(L + V + vec3(1e-5));
