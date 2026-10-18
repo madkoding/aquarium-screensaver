@@ -1,7 +1,7 @@
 import colorsys
 import unittest
 
-from iridescence import add_iridescence, iridescence_rgb
+from iridescence import FACE_ON_FLOOR, STRENGTH, add_iridescence, iridescence_rgb
 
 BASE = (0.8, 0.4, 0.2)
 
@@ -38,6 +38,15 @@ class IridescenceTest(unittest.TestCase):
     def test_disabled_keeps_base_colour_exactly(self):
         self.assertEqual(add_iridescence(BASE, 0.2, 3.0, enabled=False), BASE)
         self.assertEqual(add_iridescence(BASE, 0.2, 3.0, strength=0.0), BASE)
+
+    def test_sheen_is_visible_face_on(self):
+        face_on = add_iridescence(BASE, 1.0, 2.0)
+        self.assertTrue(any(after - before > 0.01 for before, after in zip(BASE, face_on)))
+
+    def test_shader_uses_the_same_numbers(self):
+        with open("shaders.py", encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn(f"irid * {STRENGTH:.2f} * u_irid * ({FACE_ON_FLOOR:.2f} + {1.0 - FACE_ON_FLOOR:.2f} * ", source)
 
 
 if __name__ == "__main__":

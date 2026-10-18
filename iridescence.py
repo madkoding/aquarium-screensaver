@@ -11,6 +11,11 @@ TWO_PI = 6.2831853
 CHANNEL_OFFSETS = (0.0, 0.33, 0.67)
 # Time scale: the sheen drifts slowly, it must not look like neon.
 TIME_RATE = 0.05
+# Strength of the additive sheen and how it falls off toward face-on views. The shader
+# (shaders.py, thin-film iridescence block) uses the same numbers; test_iridescence.py
+# checks that they match.
+STRENGTH = 0.40
+FACE_ON_FLOOR = 0.25      # share of the sheen that is still present when looking straight at the skin
 
 
 def _clamp01(x):
@@ -27,10 +32,11 @@ def iridescence_rgb(ndv, t):
     return tuple(0.5 + 0.5 * math.cos(phase + TWO_PI * off) for off in CHANNEL_OFFSETS)
 
 
-def add_iridescence(base, ndv, t, strength=0.14, enabled=True):
+def add_iridescence(base, ndv, t, strength=STRENGTH, enabled=True):
     """Return base plus a faint thin-film sheen, scaled by the base colour.
 
-    The term is additive and only shows at grazing angles. When disabled or
+    The term is additive, strongest at grazing angles but still visible face-on,
+    like the pearly sheen of a real scale. When disabled or
     when strength is 0, the base colour is returned unchanged.
     Every channel stays in [0, 1].
     """
@@ -38,6 +44,6 @@ def add_iridescence(base, ndv, t, strength=0.14, enabled=True):
     if not enabled or strength <= 0.0:
         return (r, g, b)
     ndv = _clamp01(ndv)
-    k = strength * (1.0 - ndv) ** 1.5
+    k = strength * (FACE_ON_FLOOR + (1.0 - FACE_ON_FLOOR) * (1.0 - ndv))
     irid = iridescence_rgb(ndv, t)
     return tuple(_clamp01(c + c * i * k) for c, i in zip((r, g, b), irid))
