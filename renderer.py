@@ -55,6 +55,11 @@ def _smooth(a, b, x):
     return t * t * (3 - 2 * t)
 
 
+def taa_pass_enabled(cfg, taau):
+    """True when render() runs the TAA pass: taa is on and no temporal upscaler is active (it accumulates on its own)."""
+    return bool(cfg["taa"]) and not taau
+
+
 class AquariumRenderer:
     name = "gpu"
 
@@ -346,6 +351,7 @@ class AquariumRenderer:
             s(prog, "u_waterBot", tup(env["bot"]))
             s(prog, "u_fog", 0.055)
             s(prog, "u_photo", float(self.cfg["realism"]))
+            s(prog, "u_irid", 1.0 if self.cfg["iridescence"] else 0.0)
             s(prog, "u_floor", float(world.FLOOR_Y))
             s(prog, "u_surf", float(world.SURFACE_Y))
             s(prog, "u_rays", float(0.20 * env["day"] + 0.03))
@@ -463,7 +469,7 @@ class AquariumRenderer:
         src = self.scene_tex
         if self.jitter_on:
             self._velocity_pass(view)
-        if self.cfg["taa"] and not self.taau:            # the temporal upscaler does its own accumulation
+        if taa_pass_enabled(self.cfg, self.taau):         # the temporal upscaler does its own accumulation
             src = self._taa_pass(eye, view)
         if self.cfg["dof"] > 0.02:
             src = self._dof_pass(t, src)

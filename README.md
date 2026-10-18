@@ -28,7 +28,7 @@ A real-time 3D aquarium screensaver for Windows, written in Python with OpenGL. 
 - **Fully procedural 3D fish:** one parametric mesh (lofted body with a shaped head and bulging eyes, forked tail, dorsal, anal, pelvic and pectoral fins) animated in the vertex shader with a wave that travels from head to tail. Species differ only by parameters: proportions, fin sizes, colors and skin pattern.
 - **Eight species:** neon tetras, clownfish, blue tangs, angelfish, discus, lionfish, tuna, and an occasional shark patrolling the far water. Everyone else flees when the shark gets close.
 - **Schooling:** every school follows a roaming waypoint and its members apply boid rules (cohesion, alignment, separation) with soft tank bounds.
-- **Detailed skin:** individual overlapping scales (they fade out with distance instead of shimmering), a dotted lateral line, gill covers, markings with organic wobbly edges, translucent fins with forking rays and ragged edges that glow when the sun shines through them, subsurface scattering on thin edges, thin-film iridescence, environment reflections on the wet skin and glossy eyes with a radial iris and a domed lens.
+- **Detailed skin:** individual overlapping scales (they fade out with distance instead of shimmering), a dotted lateral line, gill covers, markings with organic wobbly edges, translucent fins with forking rays and ragged edges that glow when the sun shines through them, subsurface scattering on thin edges, thin-film iridescence whose hue shifts with viewing angle and drifts slowly over time (turn it off with the `iridescence` setting), environment reflections on the wet skin and glossy eyes with a radial iris and a domed lens.
 
 **The reef**
 - **Procedural seabed:** layered rocks with mineral bands, cracks, barnacles and moss, sand with grain and ripples, hundreds of pebbles, brain corals with meandering grooves, branching (staghorn) corals with polyps and growth rings, table corals, lattice sea fans, anemones with round, pale-tipped tentacles, seagrass and kelp blades with midribs, veins and light shining through them, kelp forests that cast soft shadows, translucent pulsing jellyfish (scalloped margin, radial canals, gonads and frilly oral arms), bubble streams and drifting marine snow that sparkles inside the light shafts.
@@ -100,6 +100,16 @@ Measured uncapped on an RTX 3060 across three monitors (5240x1772, 9.3 million p
 | Ray tracing off | about 155 |
 
 The default comfortably holds a 75 Hz cap.
+
+## Tests
+
+The test suite runs on the `python3` found on `PATH` (Python 3.10+ with `numpy` and `pygame-ce` installed). Run it from the project root:
+
+```sh
+python3 -m compileall -q . && python3 -m unittest discover -p "test_*.py" -v
+```
+
+The wiring tests use recording doubles instead of an OpenGL context, so they do not prove that the shaders compile or that the output looks right on screen.
 
 ## Build from source
 
