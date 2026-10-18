@@ -37,6 +37,7 @@ DEFAULTS = {
     "sharpness": 0.2,         # 0..2 FSR sharpening in stops (0 = sharpest, AMD default 0.2)
     "dof": 0.45,              # 0..1 depth of field strength
     "lens": 0.35,             # 0..1 chromatic aberration and film grain
+    "iridescence": True,      # thin-film sheen on the fish skin, drifts with view angle and time
     "taa": True,              # temporal anti-aliasing (also smooths the traced AO and light shafts)
 }
 RANGES = {

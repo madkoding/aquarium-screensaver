@@ -29,6 +29,7 @@ CHECKS = [
     ("camera_drift", "Slow camera drift"),
     ("raytracing", "Ray-traced shadows, caustics, AO, light shafts and water mirror"),
     ("taa", "Temporal anti-aliasing"),
+    ("iridescence", "Fish iridescence (nacre sheen)"),
 ]
 
 

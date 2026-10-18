@@ -28,7 +28,7 @@ Un protector de pantalla de acuario 3D en tiempo real para Windows, escrito en P
 - **Peces 3D totalmente procedurales:** una malla paramétrica (cuerpo torneado con cabeza modelada y ojos saltones, cola bifurcada, aletas dorsal, anal, pélvicas y pectorales) animada en el vertex shader con una onda que viaja de la cabeza a la cola. Las especies solo se diferencian por parámetros: proporciones, tamaño de aletas, colores y patrón de piel.
 - **Ocho especies:** tetras neón, peces payaso, cirujanos azules, escalares, discos, peces león, atún y un tiburón ocasional que patrulla el agua lejana. Todos los demás huyen cuando el tiburón se acerca.
 - **Cardúmenes:** cada cardumen sigue un punto de ruta errante y sus miembros aplican las reglas de *boids* (cohesión, alineación, separación) con límites suaves del tanque.
-- **Piel detallada:** escamas individuales que se solapan (se desvanecen con la distancia en lugar de parpadear), línea lateral punteada, opérculos, dibujos con bordes ondulados y orgánicos, aletas translúcidas con nervaduras que se bifurcan y bordes irregulares que brillan cuando el sol las atraviesa, dispersión subsuperficial en los bordes finos, iridiscencia de película delgada, reflejos del entorno sobre la piel húmeda y ojos brillantes con iris radial y cristalino abombado.
+- **Piel detallada:** escamas individuales que se solapan (se desvanecen con la distancia en lugar de parpadear), línea lateral punteada, opérculos, dibujos con bordes ondulados y orgánicos, aletas translúcidas con nervaduras que se bifurcan y bordes irregulares que brillan cuando el sol las atraviesa, dispersión subsuperficial en los bordes finos, iridiscencia de película delgada cuyo tono cambia con el ángulo de visión y deriva lentamente con el tiempo (se desactiva con el ajuste `iridescence`), reflejos del entorno sobre la piel húmeda y ojos brillantes con iris radial y cristalino abombado.
 
 **El arrecife**
 - **Fondo marino procedural:** rocas en capas con bandas minerales, grietas, percebes y musgo, arena con grano y ondulaciones, cientos de guijarros, corales cerebro con surcos que serpentean, corales ramificados (cuerno de ciervo) con pólipos y anillos de crecimiento, corales de mesa, abanicos de mar con celosía, anémonas con tentáculos redondos de punta pálida, pasto marino y algas con nervadura central y venas que la luz atraviesa, bosques de algas que proyectan sombras suaves, medusas translúcidas que laten (borde festoneado, canales radiales, gónadas y brazos orales con volantes), chorros de burbujas y nieve marina a la deriva que brilla dentro de los haces de luz.
@@ -100,6 +100,16 @@ Medido sin tope de FPS en una RTX 3060 con tres monitores (5240x1772, 9,3 millon
 | Trazado de rayos desactivado | unos 155 |
 
 Con los valores por defecto se mantiene sin problema un tope de 75 Hz.
+
+## Pruebas
+
+El conjunto de pruebas se ejecuta con el `python3` que se encuentre en `PATH` (Python 3.10+ con `numpy` y `pygame-ce` instalados). Ejecútalo desde la raíz del proyecto:
+
+```sh
+python3 -m compileall -q . && python3 -m unittest discover -p "test_*.py" -v
+```
+
+Las pruebas de cableado usan dobles de grabación en lugar de un contexto de OpenGL, así que no demuestran que los shaders compilen ni que la salida se vea bien en pantalla.
 
 ## Compilar desde el código
 
